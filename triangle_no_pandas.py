@@ -13,6 +13,8 @@ class BybitTriangleArbitrage:
         )
         self.min_volume = 1000  # Minimum 24h volume
         self.min_turnover = 1000  # Minimum 24h turnover in USDT
+        self.trade_amount = 1000
+        self.depth = 2
 
     def get_tickers(self):
         """Get all tickers from Bybit excluding adventure tokens"""
@@ -35,17 +37,23 @@ class BybitTriangleArbitrage:
         try:
             orderbook = self.session.get_orderbook(
                 category="spot",
-                symbol=symbol
+                symbol=symbol,
+                limit=1000
             )
             
             # Correct access to orderbook data structure
             if 'result' in orderbook and 'b' in orderbook['result'] and 'a' in orderbook['result']:
                 bids = orderbook['result']['b']  # Bids are under 'b'
                 asks = orderbook['result']['a']  # Asks are under 'a'
+                print(bids[:5])
                 
                 # Calculate cumulative volumes
-                bid_liquidity = sum(float(bid[1]) for bid in bids[:10])  # Sum top 10 bids
-                ask_liquidity = sum(float(ask[1]) for ask in asks[:10])  # Sum top 10 asks
+                bid_liquidity = sum(float(bid[1]) for bid in bids[:self.depth])  # Sum top 10 bids
+                ask_liquidity = sum(float(ask[1]) for ask in asks[:self.depth])
+
+
+                print(f"Liquidity for {symbol}: {bid_liquidity} / {ask_liquidity}")
+                # Sum top 10 asks
                 
                 return bid_liquidity >= required_amount and ask_liquidity >= required_amount
             else:
@@ -95,10 +103,10 @@ class BybitTriangleArbitrage:
                     for pair3 in pairs_data:
                         if pair3['symbol'] == f"{token2}{base_currency}":
                             # Check orderbook depth for all pairs
-                            trade_amount = 1000  # Example trade amount in USDT
-                            if (self.check_orderbook_depth(symbol1, trade_amount) and
-                                    self.check_orderbook_depth(pair2['symbol'], trade_amount) and
-                                    self.check_orderbook_depth(pair3['symbol'], trade_amount)):
+                              # Example trade amount in USDT
+                            if (self.check_orderbook_depth(symbol1, self.trade_amount) and
+                                    self.check_orderbook_depth(pair2['symbol'], self.trade_amount) and
+                                    self.check_orderbook_depth(pair3['symbol'], self.trade_amount)):
                                 triangular_pairs.append({
                                     'pair1': symbol1,
                                     'pair2': pair2['symbol'],
@@ -116,15 +124,15 @@ class BybitTriangleArbitrage:
     def calculate_arbitrage(self, triangle):
         """Calculate potential arbitrage profit"""
         # Initial amount of base currency
-        initial_amount = 1000  # Example: 100 USDT
+
 
         # Forward trade route
-        amount1 = initial_amount / triangle['price1']  # USDT -> Token1
+        amount1 = self.trade_amount / triangle['price1']  # USDT -> Token1
         amount2 = amount1 * triangle['price2']  # Token1 -> Token2
         amount3 = amount2 * triangle['price3']  # Token2 -> USDT
 
         # Calculate profit/loss percentage
-        profit_percent = ((amount3 - initial_amount) / initial_amount) * 100
+        profit_percent = ((amount3 - self.trade_amount) / self.trade_amount) * 100
 
         return profit_percent
 
