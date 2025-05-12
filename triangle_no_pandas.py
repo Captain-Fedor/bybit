@@ -14,7 +14,7 @@ class BybitTriangleArbitrage:
         self.min_volume = 1000  # Minimum 24h volume
         self.min_turnover = 1000  # Minimum 24h turnover in USDT
         self.trade_amount = 1000
-        self.depth = 2
+        self.depth = 1
 
     def get_tickers(self):
         """Get all tickers from Bybit excluding adventure tokens"""
@@ -32,30 +32,33 @@ class BybitTriangleArbitrage:
             print(f"Error fetching tickers: {e}")
             return None
 
-    def check_orderbook_depth(self, symbol, required_amount):
+    def check_orderbook_depth(self, symbol):
         """Check if there's enough liquidity in the orderbook"""
         try:
             orderbook = self.session.get_orderbook(
                 category="spot",
                 symbol=symbol,
                 limit=1000
+
             )
             
             # Correct access to orderbook data structure
             if 'result' in orderbook and 'b' in orderbook['result'] and 'a' in orderbook['result']:
                 bids = orderbook['result']['b']  # Bids are under 'b'
-                asks = orderbook['result']['a']  # Asks are under 'a'
-                print(bids[:5])
+                asks = orderbook['result']['a']  # Asks are under 'a' [price,quantity]
+                print(bids)
+                print(asks)
+                print(f"Orderbook depth for {symbol}: {len(bids)} bids, {len(asks)} asks")
+
+
                 
                 # Calculate cumulative volumes
-                bid_liquidity = sum(float(bid[1]) for bid in bids[:self.depth])  # Sum top 10 bids
-                ask_liquidity = sum(float(ask[1]) for ask in asks[:self.depth])
-
-
+                bid_liquidity = sum(int((float(bid[0])*float(bid[1]))) for bid in bids[:self.depth])
+                ask_liquidity = sum(int((float(ask[0])*float(ask[1]))) for ask in asks[:self.depth])
                 print(f"Liquidity for {symbol}: {bid_liquidity} / {ask_liquidity}")
+
                 # Sum top 10 asks
-                
-                return bid_liquidity >= required_amount and ask_liquidity >= required_amount
+                return bid_liquidity >= self.trade_amount and ask_liquidity >= self.trade_amount
             else:
                 print(f"Unexpected orderbook structure for {symbol}: {orderbook}")
                 return False
@@ -104,9 +107,9 @@ class BybitTriangleArbitrage:
                         if pair3['symbol'] == f"{token2}{base_currency}":
                             # Check orderbook depth for all pairs
                               # Example trade amount in USDT
-                            if (self.check_orderbook_depth(symbol1, self.trade_amount) and
-                                    self.check_orderbook_depth(pair2['symbol'], self.trade_amount) and
-                                    self.check_orderbook_depth(pair3['symbol'], self.trade_amount)):
+                            if (self.check_orderbook_depth(symbol1) and
+                                    self.check_orderbook_depth(pair2['symbol']) and
+                                    self.check_orderbook_depth(pair3['symbol'])):
                                 triangular_pairs.append({
                                     'pair1': symbol1,
                                     'pair2': pair2['symbol'],
