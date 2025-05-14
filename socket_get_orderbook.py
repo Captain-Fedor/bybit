@@ -5,6 +5,7 @@ import websocket
 import threading
 import ssl
 import time
+from collections import defaultdict
 
 class BybitTriangleArbitrage:
     def __init__(self, symbols=None, depth=50):
@@ -12,30 +13,18 @@ class BybitTriangleArbitrage:
             symbols = ["ETHUSDT", "BTCUSDT"]
         self.symbols = symbols
         self.depth = depth
-        self.bids = {symbol: {} for symbol in symbols}
-        self.asks = {symbol: {} for symbol in symbols}
+        # Store current orderbook state for each symbol
+        self.orderbooks = {
+            symbol: {
+                'bids': {},  # price -> quantity
+                'asks': {}   # price -> quantity
+            } for symbol in symbols
+        }
+        # Store the latest formatted data for all symbols
+        self.current_data = {}
         self.ws = None
         self.ws_thread = None
-        
-        self.data_dir = os.path.join(os.getcwd(), 'orderbook_data')
-        try:
-            os.makedirs(self.data_dir, exist_ok=True)
-            print(f"Directory created/verified at: {self.data_dir}")
-        except Exception as e:
-            print(f"Error creating directory: {e}")
-        
         self.json_file = "orderbook_data.json"
-        self.all_data = self.load_existing_data()
-
-    def load_existing_data(self):
-        if os.path.exists(self.json_file):
-            try:
-                with open(self.json_file, 'r') as f:
-                    return json.load(f)
-            except json.JSONDecodeError:
-                print("Error reading existing file, starting fresh")
-                return {}
-        return {}
 
     def connect_websocket(self):
         websocket.enableTrace(True)
@@ -57,6 +46,78 @@ class BybitTriangleArbitrage:
         self.ws_thread = threading.Thread(target=lambda: self.ws.run_forever(sslopt=sslopt))
         self.ws_thread.daemon = True
         self.ws_thread.start()
+
+    def update_orderbook(self, symbol, bids, asks):
+        # Update bids
+        for bid in bids:
+            price, quantity = float(bid[0]), float(bid[1])
+            if quantity > 0:
+                self.orderbooks[symbol]['bids'][price] = quantity
+            else:
+                self.orderbooks[symbol]['bids'].pop(price, None)
+
+        # Update asks
+        for ask in asks:
+            price, quantity = float(ask[0]), float(ask[1])
+            if quantity > 0:
+                self.orderbooks[symbol]['asks'][price] = quantity
+            else:
+                self.orderbooks[symbol]['asks'].pop(price, None)
+
+        # Sort and limit the orderbook
+        sorted_bids = sorted(self.orderbooks[symbol]['bids'].items(), reverse=True)[:self.depth]
+        sorted_asks = sorted(self.orderbooks[symbol]['asks'].items())[:self.depth]
+
+        # Convert back to the format we want to save
+        formatted_bids = [[str(price), str(qty)] for price, qty in sorted_bids]
+        formatted_asks = [[str(price), str(qty)] for price, qty in sorted_asks]
+
+        return formatted_bids, formatted_asks
+
+    def save_to_json(self, symbol, bids, asks):
+        # Update the data for this symbol
+        self.current_data[symbol] = {
+            "timestamp": datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f'),
+            "bids": bids,
+            "asks": asks
+        }
+        
+        try:
+            # Save all symbols' data
+            with open(self.json_file, 'w') as f:
+                json.dump(self.current_data, f, indent=2)
+            
+            file_size = os.path.getsize(self.json_file)
+            print(f"Data saved for {symbol}. File size: {file_size/1024:.2f} KB")
+                
+        except Exception as e:
+            print(f"Error saving to JSON: {str(e)}")
+            import traceback
+            print(f"Full error: {traceback.format_exc()}")
+
+    def on_message(self, ws, message):
+        try:
+            data = json.loads(message)
+            
+            if 'data' in data:
+                symbol = data['data']['s']
+                if symbol in self.symbols:
+                    asks = data['data'].get('a', [])
+                    bids = data['data'].get('b', [])
+                    
+                    print(f"Processing {symbol} - Bids: {len(bids)}, Asks: {len(asks)}")
+                    
+                    # Update internal orderbook and get sorted results
+                    formatted_bids, formatted_asks = self.update_orderbook(symbol, bids, asks)
+                    
+                    # Save the current state
+                    self.save_to_json(symbol, formatted_bids, formatted_asks)
+                
+        except Exception as e:
+            print(f"Error handling message: {str(e)}")
+            print(f"Message that caused error: {message}")
+            import traceback
+            print(f"Full error: {traceback.format_exc()}")
 
     def start(self):
         print("Starting bot...")
@@ -88,81 +149,6 @@ class BybitTriangleArbitrage:
             }
             ws.send(json.dumps(subscribe_message))
             print(f"Subscribed to {symbol} orderbook")
-
-    def update_orderbook(self, symbol, bids, asks):
-        # Update bids
-        for bid in bids:
-            price, size = float(bid[0]), float(bid[1])
-            if size == 0:
-                self.bids[symbol].pop(price, None)
-            else:
-                self.bids[symbol][price] = size
-
-        # Update asks
-        for ask in asks:
-            price, size = float(ask[0]), float(ask[1])
-            if size == 0:
-                self.asks[symbol].pop(price, None)
-            else:
-                self.asks[symbol][price] = size
-
-    def get_sorted_orderbook(self, symbol):
-        bids = sorted(self.bids[symbol].items(), key=lambda x: x[0], reverse=True)
-        asks = sorted(self.asks[symbol].items(), key=lambda x: x[0])
-        return bids, asks
-
-    def save_to_json(self, symbol):
-        timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S.%f')
-        
-        if not self.bids[symbol] and not self.asks[symbol]:
-            return
-        
-        current_bids, current_asks = self.get_sorted_orderbook(symbol)
-        
-        # Format data as [price, size] arrays
-        new_data = {
-            "symbol": symbol,
-            "bids": [[price, size] for price, size in current_bids[:self.depth]],
-            "asks": [[price, size] for price, size in current_asks[:self.depth]]
-        }
-        
-        # Add to main data structure
-        if symbol not in self.all_data:
-            self.all_data[symbol] = {}
-        self.all_data[symbol][timestamp] = new_data
-        
-        try:
-            with open(self.json_file, 'w') as f:
-                json.dump(self.all_data, f, indent=2)
-            
-            file_size = os.path.getsize(self.json_file)
-            print(f"Data saved. File size: {file_size/1024:.2f} KB")
-                
-        except Exception as e:
-            print(f"Error saving to JSON: {str(e)}")
-            import traceback
-            print(f"Full error: {traceback.format_exc()}")
-
-    def on_message(self, ws, message):
-        try:
-            data = json.loads(message)
-            
-            if 'data' in data:
-                symbol = data['data']['s']
-                if symbol in self.symbols:
-                    asks = data['data'].get('a', [])
-                    bids = data['data'].get('b', [])
-                    
-                    print(f"Processing {symbol} - Bids: {len(bids)}, Asks: {len(asks)}")
-                    
-                    self.update_orderbook(symbol, bids, asks)
-                    self.save_to_json(symbol)
-                
-        except Exception as e:
-            print(f"Error handling message: {str(e)}")
-            print(f"Message that caused error: {message}")
-            import traceback
-            print(f"Full error: {traceback.format_exc()}")
 
 def main():
     symbols = ["ETHUSDT", "BTCUSDT", "SOLUSDT"]
