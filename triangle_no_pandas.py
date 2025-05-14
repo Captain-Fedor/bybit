@@ -22,7 +22,7 @@ class BybitTriangleArbitrage:
             tickers = self.session.get_tickers(category="spot")
             # Filter out adventure tokens (symbols starting with 'A')
             filtered_tickers = [
-                ticker for ticker in tickers['result']['list'] 
+                ticker for ticker in tickers['result']['list']
                 if not ticker['symbol'].startswith('A')
             ]
             with open('tickers.json', 'w') as f:
@@ -41,7 +41,7 @@ class BybitTriangleArbitrage:
                 limit=1000
 
             )
-            
+
             # Correct access to orderbook data structure
             if 'result' in orderbook and 'b' in orderbook['result'] and 'a' in orderbook['result']:
                 bids = orderbook['result']['b']  # Bids are under 'b'
@@ -50,11 +50,9 @@ class BybitTriangleArbitrage:
                 print(asks)
                 print(f"Orderbook depth for {symbol}: {len(bids)} bids, {len(asks)} asks")
 
-
-                
                 # Calculate cumulative volumes
-                bid_liquidity = sum(int((float(bid[0])*float(bid[1]))) for bid in bids[:self.depth])
-                ask_liquidity = sum(int((float(ask[0])*float(ask[1]))) for ask in asks[:self.depth])
+                bid_liquidity = sum(int((float(bid[0]) * float(bid[1]))) for bid in bids[:self.depth])
+                ask_liquidity = sum(int((float(ask[0]) * float(ask[1]))) for ask in asks[:self.depth])
                 print(f"Liquidity for {symbol}: {bid_liquidity} / {ask_liquidity}")
 
                 # Sum top 10 asks
@@ -62,7 +60,7 @@ class BybitTriangleArbitrage:
             else:
                 print(f"Unexpected orderbook structure for {symbol}: {orderbook}")
                 return False
-            
+
         except Exception as e:
             print(f"Error checking orderbook for {symbol}: {e}")
             return False
@@ -86,8 +84,6 @@ class BybitTriangleArbitrage:
                     'volume': volume
                 })
 
-
-
         triangular_pairs = []
         # Find all possible triangular combinations
         for pair1 in pairs_data:
@@ -106,7 +102,7 @@ class BybitTriangleArbitrage:
                     for pair3 in pairs_data:
                         if pair3['symbol'] == f"{token2}{base_currency}":
                             # Check orderbook depth for all pairs
-                              # Example trade amount in USDT
+                            # Example trade amount in USDT
                             if (self.check_orderbook_depth(symbol1) and
                                     self.check_orderbook_depth(pair2['symbol']) and
                                     self.check_orderbook_depth(pair3['symbol'])):
@@ -127,7 +123,6 @@ class BybitTriangleArbitrage:
     def calculate_arbitrage(self, triangle):
         """Calculate potential arbitrage profit"""
         # Initial amount of base currency
-
 
         # Forward trade route
         amount1 = self.trade_amount / triangle['price1']  # USDT -> Token1
