@@ -5,16 +5,16 @@ import json
 
 
 class BybitTriangleArbitrage:
-    def __init__(self, api_key, api_secret, testnet=True):
+    def __init__(self, api_key, api_secret, testnet=False):
         self.session = HTTP(
             testnet=testnet,
             api_key=api_key,
             api_secret=api_secret
         )
-        self.min_volume = 1000  # Minimum 24h volume
-        self.min_turnover = 1000  # Minimum 24h turnover in USDT
+        self.min_volume = 1  # Minimum 24h volume
+        self.min_turnover = 1  # Minimum 24h turnover in USDT
         self.trade_amount = 1000
-        self.depth = 1
+        self.depth = 100
 
     def get_tickers(self):
         """Get all tickers from Bybit excluding adventure tokens"""
@@ -32,61 +32,71 @@ class BybitTriangleArbitrage:
             print(f"Error fetching tickers: {e}")
             return None
 
-    def check_orderbook_depth(self, symbol):
-        """Check if there's enough liquidity in the orderbook"""
+    def get_orderbook(self, symbol):
+        """Get orderbook for a given symbol"""
         try:
             orderbook = self.session.get_orderbook(
                 category="spot",
                 symbol=symbol,
                 limit=1000
-
             )
-
-            # Correct access to orderbook data structure
-            if 'result' in orderbook and 'b' in orderbook['result'] and 'a' in orderbook['result']:
-                bids = orderbook['result']['b']  # Bids are under 'b'
-                asks = orderbook['result']['a']  # Asks are under 'a' [price,quantity]
-                print(bids)
-                print(asks)
-                print(f"Orderbook depth for {symbol}: {len(bids)} bids, {len(asks)} asks")
-
-                # Calculate cumulative volumes
-                bid_liquidity = sum(int((float(bid[0]) * float(bid[1]))) for bid in bids[:self.depth])
-                ask_liquidity = sum(int((float(ask[0]) * float(ask[1]))) for ask in asks[:self.depth])
-                print(f"Liquidity for {symbol}: {bid_liquidity} / {ask_liquidity}")
-
-                # Sum top 10 asks
-                return bid_liquidity >= self.trade_amount and ask_liquidity >= self.trade_amount
-            else:
-                print(f"Unexpected orderbook structure for {symbol}: {orderbook}")
-                return False
-
+            return orderbook
         except Exception as e:
             print(f"Error checking orderbook for {symbol}: {e}")
             return False
 
+    def check_orderbook_depth(self, symbol):
+        """Check if there's enough liquidity in the orderbook"""
+        orderbook = self.get_orderbook(symbol=symbol)
+
+            # Correct access to orderbook data structure
+        if orderbook['result']['a'] and orderbook['result']['b']:
+            bids = orderbook['result']['b']  # Bids are under 'b'
+            asks = orderbook['result']['a']  # Asks are under 'a' [price,quantity]
+
+                # Calculate cumulative volumes
+            bid_liquidity = sum(int((float(bid[0]) * float(bid[1]))) for bid in bids[:self.depth])
+            ask_liquidity = sum(int((float(ask[0]) * float(ask[1]))) for ask in asks[:self.depth])
+                # print(f"Liquidity for {symbol}: {bid_liquidity} / {ask_liquidity}")
+
+                # Sum top 10 asks
+            return bid_liquidity >= self.trade_amount and ask_liquidity >= self.trade_amount
+        else:
+            print(f"Unexpected orderbook structure for {symbol}: {orderbook}")
+            return False
+
+    def calculate_crypto_amount(self, orderbook, trade_amount):
+        asks = orderbook['result']['a']
+        sum_amount = 0
+        crypto_count = 0
+
+        # Pre-convert strings to floats to avoid repeated conversions
+        asks_float = [(float(price), float(amount)) for price, amount in asks]
+
+        for price, amount in asks_float:
+            position_total = price * amount
+            if sum_amount + position_total <= trade_amount:
+                sum_amount += position_total
+                crypto_count += amount
+            else:
+                # Calculate remaining amount needed
+                remaining = trade_amount - sum_amount
+                partial_amount = remaining / price
+                crypto_count += partial_amount
+                break
+
+        return crypto_count
+
     def find_triangular_pairs(self, base_currency="USDT"):
         """Find all possible triangular pairs with the given base currency"""
-        tickers = self.get_tickers()
-        if not tickers:
+        pair_tickers = self.get_tickers()
+        if not pair_tickers:
             return []
 
         # Create DataFrame of all trading pairs
-        pairs_data = []
-        for ticker in tickers:
-            symbol = ticker['symbol']
-            price = float(ticker['lastPrice'])
-            volume = float(ticker['volume24h'])
-            if volume >= self.min_volume:  # Only include pairs with sufficient volume
-                pairs_data.append({
-                    'symbol': symbol,
-                    'price': price,
-                    'volume': volume
-                })
-
         triangular_pairs = []
         # Find all possible triangular combinations
-        for pair1 in pairs_data:
+        for pair1 in pair_tickers:
             symbol1 = pair1['symbol']
             if not symbol1.endswith(base_currency):
                 continue
@@ -94,28 +104,19 @@ class BybitTriangleArbitrage:
             token1 = symbol1.replace(base_currency, '')
 
             # Find second pair
-            for pair2 in pairs_data:
+            for pair2 in pair_tickers:
                 if pair2['symbol'].startswith(token1):
                     token2 = pair2['symbol'].replace(token1, '')
 
                     # Find third pair to complete the triangle
-                    for pair3 in pairs_data:
+                    for pair3 in pair_tickers:
                         if pair3['symbol'] == f"{token2}{base_currency}":
                             # Check orderbook depth for all pairs
                             # Example trade amount in USDT
-                            if (self.check_orderbook_depth(symbol1) and
-                                    self.check_orderbook_depth(pair2['symbol']) and
-                                    self.check_orderbook_depth(pair3['symbol'])):
                                 triangular_pairs.append({
                                     'pair1': symbol1,
                                     'pair2': pair2['symbol'],
-                                    'pair3': pair3['symbol'],
-                                    'price1': pair1['price'],
-                                    'price2': pair2['price'],
-                                    'price3': pair3['price'],
-                                    'volume1': pair1['volume'],
-                                    'volume2': pair2['volume'],
-                                    'volume3': pair3['volume']
+                                    'pair3': pair3['symbol']
                                 })
 
         return triangular_pairs
@@ -152,18 +153,26 @@ class BybitTriangleArbitrage:
 
 # Example usage
 if __name__ == "__main__":
-    # Initialize with your API keys (use testnet first!)
-    api_key = "6gfeT8jTRhfF4Hf3cV"
-    api_secret = "uIliSYcaPnykJXFqGkbIZx89Nsp7lUOl1m0Y"
+    arbitrage_bot = BybitTriangleArbitrage(api_key='qwert', api_secret='1234', testnet=True)
 
-    arbitrage_bot = BybitTriangleArbitrage(api_key, api_secret, testnet=True)
 
-    while True:
-        print("Scanning for arbitrage opportunities...")
-        opportunities = arbitrage_bot.scan_opportunities()
+    l=arbitrage_bot.find_triangular_pairs()
 
-        for opp in opportunities:
-            print(f"Found opportunity: {opp['pairs']}")
-            print(f"Potential profit: {opp['profit_percent']:.2f}%")
 
-        time.sleep(1)  # Wait 1 second before next scan
+
+
+    # # Initialize with your API keys (use testnet first!)
+    # api_key = "6gfeT8jTRhfF4Hf3cV"
+    # api_secret = "uIliSYcaPnykJXFqGkbIZx89Nsp7lUOl1m0Y"
+    #
+    # arbitrage_bot = BybitTriangleArbitrage(api_key, api_secret, testnet=True)
+    #
+    # while True:
+    #     print("Scanning for arbitrage opportunities...")
+    #     opportunities = arbitrage_bot.scan_opportunities()
+    #
+    #     for opp in opportunities:
+    #         print(f"Found opportunity: {opp['pairs']}")
+    #         print(f"Potential profit: {opp['profit_percent']:.2f}%")
+    #
+    #     time.sleep(1)  # Wait 1 second before next scan
