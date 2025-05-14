@@ -24,7 +24,7 @@ class BybitTriangleArbitrage:
         except Exception as e:
             print(f"Error creating directory: {e}")
         
-        self.json_file = os.path.join(self.data_dir, "orderbook_data.json")
+        self.json_file = "orderbook_data.json"
         self.all_data = self.load_existing_data()
 
     def load_existing_data(self):
