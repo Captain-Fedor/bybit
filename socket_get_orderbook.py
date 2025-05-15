@@ -6,25 +6,24 @@ import threading
 import ssl
 import time
 from collections import defaultdict
+from typing import Dict, List, Any
 
-class BybitTriangleArbitrage:
-    def __init__(self, symbols=None, depth=50):
-        if symbols is None:
-            symbols = ["ETHUSDT", "BTCUSDT"]
+class BybitGetOrderBook:
+    def __init__(self, symbols, depth=50):
+
         self.symbols = symbols
         self.depth = depth
-        # Store current orderbook state for each symbol
         self.orderbooks = {
             symbol: {
                 'bids': {},  # price -> quantity
                 'asks': {}   # price -> quantity
             } for symbol in symbols
         }
-        # Store the latest formatted data for all symbols
         self.current_data = {}
         self.ws = None
         self.ws_thread = None
         self.json_file = "orderbook_data.json"
+        self.running = True
 
     def connect_websocket(self):
         websocket.enableTrace(True)
@@ -119,20 +118,35 @@ class BybitTriangleArbitrage:
             import traceback
             print(f"Full error: {traceback.format_exc()}")
 
-    def start(self):
+    def start(self) -> Dict[str, Any]:
+        """
+        Start the bot and return the final recorded data.
+        
+        Returns:
+            Dict[str, Any]: The last recorded orderbook data for all symbols
+        """
         print("Starting bot...")
         self.connect_websocket()
         
         try:
-            while True:
+            while self.running:
                 time.sleep(1)
         except KeyboardInterrupt:
+            pass
+        finally:
             print("\nShutting down...")
             if self.ws:
                 self.ws.close()
             if self.ws_thread:
                 self.ws_thread.join()
             print("Bot stopped successfully")
+            
+            # Return the final recorded data
+            return self.current_data
+
+    def stop(self):
+        """Stop the bot gracefully"""
+        self.running = False
 
     def on_error(self, ws, error):
         print(f"Error: {error}")
@@ -152,9 +166,18 @@ class BybitTriangleArbitrage:
 
 def main():
     symbols = ["ETHUSDT", "BTCUSDT", "SOLUSDT"]
-    bot = BybitTriangleArbitrage(symbols=symbols)
+    bot = BybitGetOrderBook(symbols=symbols)
     print(f"Bot initialized with symbols: {symbols}")
-    bot.start()
+    
+    try:
+        # Run the bot and get the final data
+        final_data = bot.start()
+        return final_data
+    except KeyboardInterrupt:
+        bot.stop()
+        return bot.current_data
 
 if __name__ == "__main__":
-    main()
+    recorded_data = main()
+    print("\nFinal recorded data:")
+    print(json.dumps(recorded_data, indent=2))

@@ -25,9 +25,13 @@ class BybitTriangleArbitrage:
                 ticker for ticker in tickers['result']['list']
                 if not ticker['symbol'].startswith('A')
             ]
+            _filtered_tickers = [
+                pair['symbol'] for pair in filtered_tickers
+            ]
             with open('tickers.json', 'w') as f:
-                json.dump({'result': {'list': filtered_tickers}}, f)
-            return filtered_tickers
+                # json.dump({'result': {'list': _filtered_tickers}}, f)
+                json.dump(_filtered_tickers, f)
+            return _filtered_tickers
         except Exception as e:
             print(f"Error fetching tickers: {e}")
             return None
@@ -97,7 +101,7 @@ class BybitTriangleArbitrage:
         triangular_pairs = []
         # Find all possible triangular combinations
         for pair1 in pair_tickers:
-            symbol1 = pair1['symbol']
+            symbol1 = pair1
             if not symbol1.endswith(base_currency):
                 continue
 
@@ -105,18 +109,18 @@ class BybitTriangleArbitrage:
 
             # Find second pair
             for pair2 in pair_tickers:
-                if pair2['symbol'].startswith(token1):
-                    token2 = pair2['symbol'].replace(token1, '')
+                if pair2.startswith(token1):
+                    token2 = pair2.replace(token1, '')
 
                     # Find third pair to complete the triangle
                     for pair3 in pair_tickers:
-                        if pair3['symbol'] == f"{token2}{base_currency}":
+                        if pair3 == f"{token2}{base_currency}":
                             # Check orderbook depth for all pairs
                             # Example trade amount in USDT
                                 triangular_pairs.append({
                                     'pair1': symbol1,
-                                    'pair2': pair2['symbol'],
-                                    'pair3': pair3['symbol']
+                                    'pair2': pair2,
+                                    'pair3': pair3
                                 })
 
         return triangular_pairs
@@ -157,6 +161,11 @@ if __name__ == "__main__":
 
 
     l=arbitrage_bot.find_triangular_pairs()
+    pairs = arbitrage_bot.get_tickers()
+    print(len(pairs))
+    print(pairs)
+    print(len(l))
+    print(l)
 
 
 

@@ -1,0 +1,4 @@
+You should now see more detailed output about the orderbook state and potential trading opportunities. Let me know if you'd like to:
+1. Adjust the spread threshold for arbitrage opportunities
+2. Add more sophisticated arbitrage detection
+3. Implement additional market analysis features
