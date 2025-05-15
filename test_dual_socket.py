@@ -5,6 +5,7 @@ import ssl
 import certifi
 from typing import List, Dict, Tuple
 
+
 class TripleSocketManager:
     def __init__(self):
         self.ws1 = None
@@ -20,7 +21,7 @@ class TripleSocketManager:
         """Start the WebSocket connections"""
         pairs = self.get_filtered_tickers()
         ws1_pairs, ws2_pairs, ws3_pairs = self.split_pairs(pairs)
-        
+
         self.ws1 = self._connect_websocket("ws1", ws1_pairs)
         self.ws2 = self._connect_websocket("ws2", ws2_pairs)
         self.ws3 = self._connect_websocket("ws3", ws3_pairs)
@@ -29,22 +30,22 @@ class TripleSocketManager:
         """Split the trading pairs into three groups, respecting the 150 pair per connection limit"""
         total_pairs = len(pairs)
         max_total = self.MAX_PAIRS_PER_CONNECTION * 3
-        
+
         if total_pairs > max_total:
             print(f"Warning: Total pairs ({total_pairs}) exceeds maximum capacity ({max_total})")
             pairs = pairs[:max_total]
-        
+
         third = len(pairs) // 3
         return (
             pairs[:third],
-            pairs[third:2*third],
-            pairs[2*third:]
+            pairs[third:2 * third],
+            pairs[2 * third:]
         )
 
     def _connect_websocket(self, ws_name: str, pairs: List[dict]) -> websocket.WebSocketApp:
         """Create a WebSocket connection"""
         endpoint = "wss://stream.bybit.com/v5/public/spot"
-        
+
         ws = websocket.WebSocketApp(
             endpoint,
             on_message=lambda ws, msg: self._on_message(ws, msg, ws_name),
@@ -52,7 +53,7 @@ class TripleSocketManager:
             on_close=lambda ws, close_status_code, close_msg: self._on_close(ws, close_status_code, close_msg, ws_name),
             on_open=lambda ws: self._on_open(ws, ws_name, pairs)
         )
-        
+
         ws_thread = threading.Thread(
             target=lambda: ws.run_forever(
                 sslopt={
@@ -63,7 +64,7 @@ class TripleSocketManager:
         )
         ws_thread.daemon = True
         ws_thread.start()
-        
+
         return ws
 
     def _on_open(self, ws, ws_name: str, pairs: List[dict]):
@@ -77,11 +78,12 @@ class TripleSocketManager:
             if not pairs:
                 print("Warning: No pairs available for subscription")
                 return
-                
+
             if len(pairs) > self.MAX_PAIRS_PER_CONNECTION:
-                print(f"Warning: Number of pairs ({len(pairs)}) exceeds WebSocket limit ({self.MAX_PAIRS_PER_CONNECTION})")
+                print(
+                    f"Warning: Number of pairs ({len(pairs)}) exceeds WebSocket limit ({self.MAX_PAIRS_PER_CONNECTION})")
                 pairs = pairs[:self.MAX_PAIRS_PER_CONNECTION]
-                
+
             subscribe_message = {
                 "op": "subscribe",
                 "args": [f"orderbook.1.{pair['symbol']}" for pair in pairs]
@@ -89,7 +91,7 @@ class TripleSocketManager:
             print(f"Attempting to subscribe with pairs: {pairs}")
             print(f"Sending subscription message: {subscribe_message}")
             ws.send(json.dumps(subscribe_message))
-            
+
         except Exception as e:
             print(f"Error in subscription: {e}")
 
@@ -97,21 +99,27 @@ class TripleSocketManager:
         """Handle incoming WebSocket messages"""
         try:
             data = json.loads(message)
-            print(f"Received message on {ws_name}: {data}")
             
-            # Process orderbook data based on which connection received it
-            processed_data = self._process_orderbook(data)
-            if processed_data:
-                if ws_name == "ws1":
-                    self.orderbook1 = processed_data
-                elif ws_name == "ws2":
-                    self.orderbook2 = processed_data
-                else:  # ws3
-                    self.orderbook3 = processed_data
-            
-                # Check for arbitrage opportunities
-                self._check_arbitrage_opportunities(ws_name, data)
-            
+            # Only process messages that contain orderbook data
+            if 'topic' in data and 'orderbook' in data['topic']:
+                processed_data = self._process_orderbook(data, depth=1)
+                if processed_data:
+                    if ws_name == "ws1":
+                        self.orderbook1 = processed_data
+                    elif ws_name == "ws2":
+                        self.orderbook2 = processed_data
+                    else:  # ws3
+                        self.orderbook3 = processed_data
+                
+                # Display all orderbooks as dictionaries
+                print("\nCurrent Orderbooks:")
+                if hasattr(self, 'orderbook1'):
+                    print(f"Orderbook 1: {self.orderbook1}")
+                if hasattr(self, 'orderbook2'):
+                    print(f"Orderbook 2: {self.orderbook2}")
+                if hasattr(self, 'orderbook3'):
+                    print(f"Orderbook 3: {self.orderbook3}")
+                print("-" * 50)
         except Exception as e:
             print(f"Error processing message on {ws_name}: {e}")
 
@@ -126,7 +134,7 @@ class TripleSocketManager:
             print(f"Attempting to reconnect {ws_name}...")
             pairs = self.get_filtered_tickers()
             ws1_pairs, ws2_pairs, ws3_pairs = self.split_pairs(pairs)
-            
+
             if ws_name == "ws1":
                 self.ws1 = self._connect_websocket(ws_name, ws1_pairs)
             elif ws_name == "ws2":
@@ -134,28 +142,25 @@ class TripleSocketManager:
             else:  # ws3
                 self.ws3 = self._connect_websocket(ws_name, ws3_pairs)
 
-    def _process_orderbook(self, data: Dict) -> Dict:
-        """Process orderbook data"""
+    def _process_orderbook(self, data: Dict, depth: int = 10) -> Dict:
+        """
+        Process orderbook data
+        Args:
+            data: The orderbook data
+            depth: Number of price levels to show (default=1)
+        """
         try:
-            if 'topic' not in data:  # Skip non-orderbook messages
+            if 'topic' not in data or 'orderbook' not in data['topic']:
                 return {}
-                
+
             symbol = data['data']['s']
             orderbook = {
                 'symbol': symbol,
-                'timestamp': data['ts'],
-                'bids': {price: qty for price, qty in data['data']['b']},
-                'asks': {price: qty for price, qty in data['data']['a']},
-                'update_id': data['data']['u'],
-                'sequence': data['data']['seq']
+                'bids': {bid[0]: bid[1] for bid in data['data']['b'][:depth]},  # Convert to dict with price as key
+                'asks': {ask[0]: ask[1] for ask in data['data']['a'][:depth]}   # Convert to dict with price as key
             }
-            
-            print(f"Processed orderbook for {symbol}:")
-            print(f"Top bid: {list(orderbook['bids'].items())[0] if orderbook['bids'] else 'No bids'}")
-            print(f"Top ask: {list(orderbook['asks'].items())[0] if orderbook['asks'] else 'No asks'}")
-            
             return orderbook
-            
+
         except Exception as e:
             print(f"Error processing orderbook: {e}")
             return {}
@@ -165,20 +170,20 @@ class TripleSocketManager:
         try:
             if 'topic' not in data or 'data' not in data:
                 return
-                
+
             symbol = data['data']['s']
-            
+
             best_bid = float(data['data']['b'][0][0]) if data['data']['b'] else None
             best_ask = float(data['data']['a'][0][0]) if data['data']['a'] else None
-            
+
             if best_bid and best_ask:
                 spread = ((best_ask - best_bid) / best_bid) * 100
                 print(f"Spread for {symbol}: {spread:.4f}%")
-                
+
                 if spread > 0.5:  # 0.5% spread threshold
                     print(f"Potential arbitrage opportunity found for {symbol}")
                     print(f"Bid: {best_bid}, Ask: {best_ask}, Spread: {spread:.4f}%")
-                    
+
         except Exception as e:
             print(f"Error checking arbitrage: {e}")
 
@@ -204,17 +209,19 @@ class TripleSocketManager:
             {'symbol': 'DOGEUSDT'}
         ]
 
+
 if __name__ == "__main__":
     try:
         print("Starting WebSocket connections...")
         manager = TripleSocketManager()
         manager.start()
-        
+
         # Keep the main thread running
         import time
+
         while True:
             time.sleep(1)
-            
+
     except KeyboardInterrupt:
         print("\nShutting down WebSocket connections...")
         manager.stop()
