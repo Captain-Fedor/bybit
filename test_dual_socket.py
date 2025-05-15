@@ -1,228 +1,155 @@
-import websocket
 import json
-import threading
+import websocket
+from typing import Dict, List
 import ssl
-import certifi
-from typing import List, Dict, Tuple
+import threading
+import time
 
+class DualSocketClient:
+    def __init__(self, symbols: List[str]):
+        self.ws_url = "wss://stream.bybit.com/v5/public/spot"
+        self.symbols = symbols
+        self.orderbooks = {symbol: {} for symbol in symbols}
+        self.running = False
 
-class TripleSocketManager:
-    def __init__(self):
-        self.ws1 = None
-        self.ws2 = None
-        self.ws3 = None
-        self.orderbook1 = {}
-        self.orderbook2 = {}
-        self.orderbook3 = {}
-        self.running = True
-        self.MAX_PAIRS_PER_CONNECTION = 150
+    def _get_subscribe_message(self, symbols: List[str]) -> Dict:
+        return {
+            "op": "subscribe",
+            "args": [f"orderbook.50.{symbol}" for symbol in symbols]
+        }
 
-    def start(self):
-        """Start the WebSocket connections"""
-        pairs = self.get_filtered_tickers()
-        ws1_pairs, ws2_pairs, ws3_pairs = self.split_pairs(pairs)
+    def _update_orderbook(self, symbol: str, bids: List, asks: List):
+        if symbol not in self.orderbooks:
+            self.orderbooks[symbol] = {'bids': {}, 'asks': {}}
+        
+        # Update bids
+        for price, qty in bids:
+            price, qty = float(price), float(qty)
+            if qty > 0:
+                self.orderbooks[symbol]['bids'][price] = qty
+            else:
+                self.orderbooks[symbol]['bids'].pop(price, None)
 
-        self.ws1 = self._connect_websocket("ws1", ws1_pairs)
-        self.ws2 = self._connect_websocket("ws2", ws2_pairs)
-        self.ws3 = self._connect_websocket("ws3", ws3_pairs)
+        # Update asks
+        for price, qty in asks:
+            price, qty = float(price), float(qty)
+            if qty > 0:
+                self.orderbooks[symbol]['asks'][price] = qty
+            else:
+                self.orderbooks[symbol]['asks'].pop(price, None)
 
-    def split_pairs(self, pairs: List[dict]) -> Tuple[List[dict], List[dict], List[dict]]:
-        """Split the trading pairs into three groups, respecting the 150 pair per connection limit"""
-        total_pairs = len(pairs)
-        max_total = self.MAX_PAIRS_PER_CONNECTION * 3
-
-        if total_pairs > max_total:
-            print(f"Warning: Total pairs ({total_pairs}) exceeds maximum capacity ({max_total})")
-            pairs = pairs[:max_total]
-
-        third = len(pairs) // 3
-        return (
-            pairs[:third],
-            pairs[third:2 * third],
-            pairs[2 * third:]
-        )
-
-    def _connect_websocket(self, ws_name: str, pairs: List[dict]) -> websocket.WebSocketApp:
-        """Create a WebSocket connection"""
-        endpoint = "wss://stream.bybit.com/v5/public/spot"
-
-        ws = websocket.WebSocketApp(
-            endpoint,
-            on_message=lambda ws, msg: self._on_message(ws, msg, ws_name),
-            on_error=lambda ws, error: self._on_error(ws, error, ws_name),
-            on_close=lambda ws, close_status_code, close_msg: self._on_close(ws, close_status_code, close_msg, ws_name),
-            on_open=lambda ws: self._on_open(ws, ws_name, pairs)
-        )
-
-        ws_thread = threading.Thread(
-            target=lambda: ws.run_forever(
-                sslopt={
-                    "cert_reqs": ssl.CERT_REQUIRED,
-                    "ca_certs": certifi.where()
-                }
-            )
-        )
-        ws_thread.daemon = True
-        ws_thread.start()
-
-        return ws
-
-    def _on_open(self, ws, ws_name: str, pairs: List[dict]):
-        """Handle WebSocket connection open"""
-        print(f"{ws_name} connection established")
-        self._subscribe_to_orderbook(ws, pairs)
-
-    def _subscribe_to_orderbook(self, ws, pairs: List[dict]):
-        """Subscribe to orderbook data for specified pairs"""
-        try:
-            if not pairs:
-                print("Warning: No pairs available for subscription")
-                return
-
-            if len(pairs) > self.MAX_PAIRS_PER_CONNECTION:
-                print(
-                    f"Warning: Number of pairs ({len(pairs)}) exceeds WebSocket limit ({self.MAX_PAIRS_PER_CONNECTION})")
-                pairs = pairs[:self.MAX_PAIRS_PER_CONNECTION]
-
-            subscribe_message = {
-                "op": "subscribe",
-                "args": [f"orderbook.1.{pair['symbol']}" for pair in pairs]
+    def _process_orderbook(self, data: Dict):
+        book_data = data.get('data', {})
+        symbol = book_data.get('s', '')
+        bids = book_data.get('b', [])
+        asks = book_data.get('a', [])
+        
+        if data.get('type') == 'snapshot':
+            self.orderbooks[symbol] = {
+                'bids': {float(price): float(qty) for price, qty in bids if float(qty) > 0},
+                'asks': {float(price): float(qty) for price, qty in asks if float(qty) > 0},
+                'u': book_data.get('u', 0),
+                'seq': book_data.get('seq', 0)
             }
-            print(f"Attempting to subscribe with pairs: {pairs}")
-            print(f"Sending subscription message: {subscribe_message}")
-            ws.send(json.dumps(subscribe_message))
+        elif data.get('type') == 'delta':
+            self._update_orderbook(symbol, bids, asks)
+            self.orderbooks[symbol].update({
+                'u': book_data.get('u', 0),
+                'seq': book_data.get('seq', 0)
+            })
 
-        except Exception as e:
-            print(f"Error in subscription: {e}")
-
-    def _on_message(self, ws, message, ws_name: str):
-        """Handle incoming WebSocket messages"""
+    def _on_message(self, ws, message):
         try:
             data = json.loads(message)
-            
-            # Only process messages that contain orderbook data
             if 'topic' in data and 'orderbook' in data['topic']:
-                processed_data = self._process_orderbook(data, depth=1)
-                if processed_data:
-                    if ws_name == "ws1":
-                        self.orderbook1 = processed_data
-                    elif ws_name == "ws2":
-                        self.orderbook2 = processed_data
-                    else:  # ws3
-                        self.orderbook3 = processed_data
-                
-                # Display all orderbooks as dictionaries
-                print("\nCurrent Orderbooks:")
-                if hasattr(self, 'orderbook1'):
-                    print(f"Orderbook 1: {self.orderbook1}")
-                if hasattr(self, 'orderbook2'):
-                    print(f"Orderbook 2: {self.orderbook2}")
-                if hasattr(self, 'orderbook3'):
-                    print(f"Orderbook 3: {self.orderbook3}")
-                print("-" * 50)
+                self._process_orderbook(data)
         except Exception as e:
-            print(f"Error processing message on {ws_name}: {e}")
+            print(f"Error: {e}")
 
-    def _on_error(self, ws, error, ws_name: str):
-        """Handle WebSocket errors"""
-        print(f"Error in {ws_name}: {error}")
+    def _ws_thread(self):
+        def on_open(ws):
+            ws.send(json.dumps(self._get_subscribe_message(self.symbols)))
+            print("WebSocket connected")
 
-    def _on_close(self, ws, close_status_code, close_msg, ws_name: str):
-        """Handle WebSocket connection close"""
-        print(f"{ws_name} connection closed: {close_status_code} - {close_msg}")
-        if self.running:
-            print(f"Attempting to reconnect {ws_name}...")
-            pairs = self.get_filtered_tickers()
-            ws1_pairs, ws2_pairs, ws3_pairs = self.split_pairs(pairs)
+        self.ws = websocket.WebSocketApp(
+            self.ws_url,
+            on_message=self._on_message,
+            on_open=on_open
+        )
 
-            if ws_name == "ws1":
-                self.ws1 = self._connect_websocket(ws_name, ws1_pairs)
-            elif ws_name == "ws2":
-                self.ws2 = self._connect_websocket(ws_name, ws2_pairs)
-            else:  # ws3
-                self.ws3 = self._connect_websocket(ws_name, ws3_pairs)
+        self.ws.run_forever(
+            sslopt={"cert_reqs": ssl.CERT_NONE},
+            ping_interval=20,
+            ping_timeout=10
+        )
 
-    def _process_orderbook(self, data: Dict, depth: int = 10) -> Dict:
-        """
-        Process orderbook data
-        Args:
-            data: The orderbook data
-            depth: Number of price levels to show (default=1)
-        """
-        try:
-            if 'topic' not in data or 'orderbook' not in data['topic']:
-                return {}
-
-            symbol = data['data']['s']
-            orderbook = {
-                'symbol': symbol,
-                'bids': {bid[0]: bid[1] for bid in data['data']['b'][:depth]},  # Convert to dict with price as key
-                'asks': {ask[0]: ask[1] for ask in data['data']['a'][:depth]}   # Convert to dict with price as key
-            }
-            return orderbook
-
-        except Exception as e:
-            print(f"Error processing orderbook: {e}")
-            return {}
-
-    def _check_arbitrage_opportunities(self, ws_name: str, data: Dict):
-        """Check for arbitrage opportunities across all orderbooks"""
-        try:
-            if 'topic' not in data or 'data' not in data:
-                return
-
-            symbol = data['data']['s']
-
-            best_bid = float(data['data']['b'][0][0]) if data['data']['b'] else None
-            best_ask = float(data['data']['a'][0][0]) if data['data']['a'] else None
-
-            if best_bid and best_ask:
-                spread = ((best_ask - best_bid) / best_bid) * 100
-                print(f"Spread for {symbol}: {spread:.4f}%")
-
-                if spread > 0.5:  # 0.5% spread threshold
-                    print(f"Potential arbitrage opportunity found for {symbol}")
-                    print(f"Bid: {best_bid}, Ask: {best_ask}, Spread: {spread:.4f}%")
-
-        except Exception as e:
-            print(f"Error checking arbitrage: {e}")
+    def start(self):
+        self.running = True
+        self.ws_thread = threading.Thread(target=self._ws_thread)
+        self.ws_thread.daemon = True
+        self.ws_thread.start()
 
     def stop(self):
-        """Stop all WebSocket connections"""
         self.running = False
-        if self.ws1:
-            self.ws1.close()
-        if self.ws2:
-            self.ws2.close()
-        if self.ws3:
-            self.ws3.close()
+        if hasattr(self, 'ws'):
+            self.ws.close()
 
-    def get_filtered_tickers(self) -> List[dict]:
-        """Get filtered list of tickers"""
-        # Return some test data for now
-        return [
-            {'symbol': 'BTCUSDT'},
-            {'symbol': 'ETHUSDT'},
-            {'symbol': 'BNBUSDT'},
-            {'symbol': 'XRPUSDT'},
-            {'symbol': 'SOLUSDT'},
-            {'symbol': 'DOGEUSDT'}
-        ]
+    def get_orderbook(self, symbol: str) -> Dict:
+        return self.orderbooks.get(symbol, {})
 
+    def print_orderbooks(self):
+        """Print current state of orderbooks with improved formatting"""
+        for symbol in self.symbols:
+            ob = self.get_orderbook(symbol)
+            if ob and (ob.get('bids') or ob.get('asks')):
+                print(f"\n{'='*50}")
+                print(f"{symbol} Orderbook".center(50))
+                print(f"{'='*50}")
+                
+                bids = sorted(ob.get('bids', {}).items(), reverse=True)[:5]
+                asks = sorted(ob.get('asks', {}).items())[:5]
+                
+                # Header
+                print(f"\n{'Price':^15} | {'Quantity':^15} | {'Total($)':^15}")
+                print('-' * 49)
+                
+                # Print asks in reverse order (highest to lowest)
+                for price, qty in reversed(asks):
+                    total = price * qty
+                    print(f"{price:15.8f} | {qty:15.3f} | {total:15.2f}")
+                
+                # Spread calculation if both bids and asks exist
+                if bids and asks:
+                    spread = asks[0][0] - bids[0][0]
+                    spread_pct = (spread / asks[0][0]) * 100
+                    print(f"\nSpread: {spread:.8f} ({spread_pct:.2f}%)")
+                
+                # Print bids
+                print('-' * 49)
+                for price, qty in bids:
+                    total = price * qty
+                    print(f"{price:15.8f} | {qty:15.3f} | {total:15.2f}")
+                
+                print(f"\nBid Levels: {len(ob.get('bids', {}))}")
+                print(f"Ask Levels: {len(ob.get('asks', {}))}")
+                print(f"Update ID: {ob.get('u', 0)}")
 
 if __name__ == "__main__":
+    # Enable debug level for websocket
+    websocket.enableTrace(True)
+    
+    symbols = ["BTCUSDT", "ETHUSDT", "DOGEUSDT"]
+    client = DualSocketClient(symbols)
+    
     try:
-        print("Starting WebSocket connections...")
-        manager = TripleSocketManager()
-        manager.start()
-
-        # Keep the main thread running
-        import time
-
+        client.start()
+        print("Starting WebSocket connection...")
+        
         while True:
-            time.sleep(1)
-
+            client.print_orderbooks()
+            time.sleep(1)  # Reduced to 1 second
+            print("\033[2J\033[H")  # Clear screen
+            
     except KeyboardInterrupt:
-        print("\nShutting down WebSocket connections...")
-        manager.stop()
-        print("Shutdown complete")
+        print("\nShutting down...")
+        client.stop()
