@@ -99,10 +99,14 @@ class SymbolWebSocket:
             print(f"Error in Socket {self.socket_id}: {e}")
 
     def _on_error(self, ws, error):
-        print(f"WebSocket error in Socket {self.socket_id}: {error}")
+        print(f"WebSocket error in Socket {self.socket_id} at {datetime.now().isoformat()}: {error}")
+        print(f"Affected symbols: {self.symbols}")
 
     def _on_close(self, ws, close_status_code, close_msg):
-        print(f"WebSocket closed for Socket {self.socket_id}: {close_status_code} - {close_msg}")
+        print(f"WebSocket closed for Socket {self.socket_id} at {datetime.now().isoformat()}")
+        print(f"Close status code: {close_status_code}")
+        print(f"Close message: {close_msg}")
+        print(f"Affected symbols: {self.symbols}")
         if self.running:
             print(f"Attempting to reconnect Socket {self.socket_id}...")
             time.sleep(5)
@@ -258,22 +262,33 @@ class MultiSocketClient:
         for i, symbols in enumerate(self.socket_symbols):
             print(f"Socket {i + 1}: {len(symbols)} pairs")
 
-        print("\nSample of Orderbooks:")
-        for symbol in list(orderbooks.keys())[:3]:
-            print(f"\n{symbol}:")
-            book = orderbooks[symbol]
-            if 'bids' in book and 'asks' in book:
-                print("Top 3 Bids:", book['bids'][:3])
-                print("Top 3 Asks:", book['asks'][:3])
-                print("Last Update:", book.get('timestamp', 'N/A'))
-                print("Socket:", book.get('socket_id', 'N/A'))
+        print("\nSample of Orderbooks (one from each socket):")
+        # Group orderbooks by socket_id
+        socket_books = {1: [], 2: [], 3: []}
+        for symbol, book in orderbooks.items():
+            socket_id = book.get('socket_id')
+            if socket_id:
+                socket_books[socket_id].append((symbol, book))
+
+        # Print one orderbook from each socket
+        for socket_id in [1, 2, 3]:
+            books = socket_books[socket_id]
+            if books:
+                symbol, book = books[0]  # Take the first book from this socket
+                print(f"\n{symbol} (Socket {socket_id}):")
+                if 'bids' in book and 'asks' in book:
+                    print("Top 3 Bids:", book['bids'][:3])
+                    print("Top 3 Asks:", book['asks'][:3])
+                    print("Last Update:", book.get('timestamp', 'N/A'))
 
 
 def load_trading_pairs() -> List[str]:
     return [
         "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
-        "DOGEUSDT", "MATICUSDT", "SOLUSDT", "DOTUSDT", "LTCUSDT"
-        # ... add more pairs as needed
+        "DOGEUSDT", "MATICUSDT", "SOLUSDT", "DOTUSDT", "LTCUSDT",
+        "LINKUSDT", "UNIUSDT", "ATOMUSDT", "AVAXUSDT", "NEARUSDT",
+        "ALGOUSDT", "FTMUSDT", "TRXUSDT", "ETCUSDT", "SANDUSDT"
+        # Add more pairs as needed
     ]
 
 
@@ -282,7 +297,7 @@ if __name__ == "__main__":
 
     # WebSocket parameters
     SLEEP_TIME = 1  # seconds between orderbook updates
-    TRADING_AMOUNT_USDT = 100000  # $100k USDT base trading amount
+    TRADING_AMOUNT_USDT = 1000  # $100k USDT base trading amount
 
     trading_pairs = load_trading_pairs()
     client = MultiSocketClient(
