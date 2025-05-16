@@ -10,6 +10,7 @@ import os
 from collections import deque
 import threading
 
+
 class SymbolWebSocket:
     def __init__(self, symbols: List[str], socket_id: int, orderbooks: Dict, update_queue: deque):
         self.ws_url = "wss://stream.bybit.com/v5/public/spot"
@@ -36,7 +37,7 @@ class SymbolWebSocket:
                     'socket_id': self.socket_id,
                     'timestamp': datetime.now().isoformat()
                 }
-            
+
             # Convert existing bids/asks to dictionary for efficient updates
             current_bids = {float(price): float(qty) for price, qty in self.orderbooks[symbol]['bids']}
             current_asks = {float(price): float(qty) for price, qty in self.orderbooks[symbol]['asks']}
@@ -59,17 +60,17 @@ class SymbolWebSocket:
 
             # Convert back to sorted lists
             self.orderbooks[symbol]['bids'] = [
-                [price, qty] 
+                [price, qty]
                 for price, qty in sorted(current_bids.items(), reverse=True)
             ]
             self.orderbooks[symbol]['asks'] = [
-                [price, qty] 
+                [price, qty]
                 for price, qty in sorted(current_asks.items())
             ]
 
             # Update timestamp
             self.orderbooks[symbol]['timestamp'] = datetime.now().isoformat()
-            
+
             # Signal update
             self.update_queue.append(symbol)
 
@@ -81,7 +82,7 @@ class SymbolWebSocket:
                 symbol = book_data.get('s', '')
                 bids = book_data.get('b', [])
                 asks = book_data.get('a', [])
-                
+
                 if data.get('type') == 'snapshot':
                     with self.lock:
                         self.orderbooks[symbol] = {
@@ -93,7 +94,7 @@ class SymbolWebSocket:
                     self.update_queue.append(symbol)
                 elif data.get('type') == 'delta':
                     self._update_orderbook(symbol, bids, asks)
-                    
+
         except Exception as e:
             print(f"Error in Socket {self.socket_id}: {e}")
 
@@ -108,7 +109,8 @@ class SymbolWebSocket:
             self._ws_thread()
 
     def _on_open(self, ws):
-        print(f"{datetime.now().strftime('%H:%M:%S.%f')} WebSocket {self.socket_id} connected with {len(self.symbols)} pairs")
+        print(
+            f"{datetime.now().strftime('%H:%M:%S.%f')} WebSocket {self.socket_id} connected with {len(self.symbols)} pairs")
         ws.send(json.dumps(self._get_subscribe_message()))
 
     def _ws_thread(self):
@@ -137,53 +139,85 @@ class SymbolWebSocket:
         if self.ws:
             self.ws.close()
 
+
 class MultiSocketClient:
-    def __init__(self, symbols: List[str], max_pairs_per_socket: int = 150):
+    def __init__(self, symbols: List[str], trading_amounts: Dict[str, float] = None, default_amount: float = 10000, max_pairs_per_socket: int = 150):
         self.all_symbols = symbols
         self.max_pairs_per_socket = max_pairs_per_socket
         self.orderbooks = {}
         self.sockets = []
         self.update_queue = deque(maxlen=1000)  # Store updates
         self.socket_symbols = self._distribute_symbols()
+        self.trading_amounts = trading_amounts or {}
+        self.default_amount = default_amount
         self.lock = threading.Lock()
-        
+
         # Start JSON writer thread
         self.json_writer_running = True
         self.json_writer_thread = threading.Thread(target=self._json_writer_task)
         self.json_writer_thread.daemon = True
         self.json_writer_thread.start()
 
+    def _check_liquidity(self, symbol: str, book: Dict) -> bool:
+        """Check if orderbook has sufficient liquidity for the trading amount"""
+        amount = self.trading_amounts.get(symbol, self.default_amount)
+        
+        if not book.get('bids') or not book.get('asks'):
+            return False
+
+        # Get average price for conversion
+        best_bid = book['bids'][0][0] if book['bids'] else 0
+        best_ask = book['asks'][0][0] if book['asks'] else float('inf')
+        avg_price = (best_bid + best_ask) / 2 if best_bid and best_ask != float('inf') else best_bid
+
+        # Convert USDT amount to base currency quantity
+        base_quantity = amount / avg_price if avg_price > 0 else 0
+
+        # Calculate cumulative liquidity
+        bid_liquidity = sum(qty for _, qty in book['bids'])
+        ask_liquidity = sum(qty for _, qty in book['asks'])
+
+        # Return True if both sides have sufficient liquidity
+        return bid_liquidity >= base_quantity and ask_liquidity >= base_quantity
+
     def _json_writer_task(self):
         """Continuously write updates to JSON file"""
         while self.json_writer_running:
             if len(self.update_queue) > 0:
                 with self.lock:
+                    # Filter orderbooks with sufficient liquidity
+                    valid_orderbooks = {}
+                    for symbol, book in self.orderbooks.items():
+                        if self._check_liquidity(symbol, book):
+                            valid_orderbooks[symbol] = book
+
                     result = {
                         'timestamp': datetime.now().isoformat(),
-                        'total_pairs': len(self.orderbooks),
+                        'trading_amount_usdt': self.default_amount,
+                        'total_pairs': len(valid_orderbooks),
                         'socket_distribution': {
-                            f'socket_{i+1}': len(symbols) 
+                            f'socket_{i + 1}': len(symbols)
                             for i, symbols in enumerate(self.socket_symbols)
                         },
-                        'orderbooks': self.orderbooks
+                        'orderbooks': valid_orderbooks
                     }
-                    
+
                     try:
                         with open('triple_socket_result.json', 'w') as f:
                             json.dump(result, f, indent=2)
                     except Exception as e:
                         print(f"Error saving to JSON: {e}")
-                        
+
                     # Clear processed updates
                     self.update_queue.clear()
-            
+
             time.sleep(0.1)  # Small delay to prevent CPU overuse
 
     def _distribute_symbols(self) -> List[List[str]]:
         """Distribute symbols evenly across 3 sockets"""
         socket_symbols = []
         total_symbols = len(self.all_symbols)
-        
+
         if total_symbols > self.max_pairs_per_socket * 3:
             print(f"Warning: Total pairs ({total_symbols}) exceeds maximum capacity ({self.max_pairs_per_socket * 3})")
             self.all_symbols = self.all_symbols[:self.max_pairs_per_socket * 3]
@@ -222,8 +256,8 @@ class MultiSocketClient:
         print("\nActive Pairs:", len(orderbooks))
         print("Socket Distribution:")
         for i, symbols in enumerate(self.socket_symbols):
-            print(f"Socket {i+1}: {len(symbols)} pairs")
-        
+            print(f"Socket {i + 1}: {len(symbols)} pairs")
+
         print("\nSample of Orderbooks:")
         for symbol in list(orderbooks.keys())[:3]:
             print(f"\n{symbol}:")
@@ -234,6 +268,7 @@ class MultiSocketClient:
                 print("Last Update:", book.get('timestamp', 'N/A'))
                 print("Socket:", book.get('socket_id', 'N/A'))
 
+
 def load_trading_pairs() -> List[str]:
     return [
         "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
@@ -241,21 +276,32 @@ def load_trading_pairs() -> List[str]:
         # ... add more pairs as needed
     ]
 
+
 if __name__ == "__main__":
     websocket.enableTrace(False)
-    
+
+    # WebSocket parameters
+    SLEEP_TIME = 1  # seconds between orderbook updates
+    TRADING_AMOUNT_USDT = 100000  # $100k USDT base trading amount
+
     trading_pairs = load_trading_pairs()
-    client = MultiSocketClient(trading_pairs)
-    
+    client = MultiSocketClient(
+        symbols=trading_pairs,
+        default_amount=TRADING_AMOUNT_USDT
+    )
+
     try:
         client.start()
         print("Starting WebSocket connections...")
-        
+        print(f"Monitoring liquidity for {len(trading_pairs)} pairs...")
+        print(f"Liquidity check amount: ${TRADING_AMOUNT_USDT:,} USDT equivalent for each pair")
+        print(f"Update interval: {SLEEP_TIME} seconds")
+
         while True:
             client.print_orderbooks()
-            time.sleep(2)
+            time.sleep(SLEEP_TIME)  # Use the defined sleep parameter
             print("\033[2J\033[H")  # Clear screen
-            
+
     except KeyboardInterrupt:
         print("\nShutting down...")
         client.stop()
