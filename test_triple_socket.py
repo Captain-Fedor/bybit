@@ -218,14 +218,17 @@ class MultiSocketClient:
                             }
 
                 # Get total number of pairs from load_trading_pairs
-                expected_pairs = len(load_trading_pairs())
+                expected_pairs = set(load_trading_pairs())  # All trading pairs
                 actual_pairs = len(valid_orderbooks)
+                monitored_pairs = set(valid_orderbooks.keys())  # Pairs being monitored
+                unmonitored_pairs = list(expected_pairs - monitored_pairs)  # Pairs not being monitored
 
                 result = {
                     'timestamp': datetime.now().isoformat(),
                     'trading_amount_usdt': self.default_amount,
                     'total_pairs': actual_pairs,
-                    'count_confirmed': actual_pairs == expected_pairs,
+                    'pairs not monitored by test_triple_socket': unmonitored_pairs,
+                    'number of pairs uploaded initially': len(load_trading_pairs()),
                     'socket_distribution': {
                         f'socket_{i + 1}': len(symbols)
                         for i, symbols in enumerate(self.socket_symbols)
@@ -311,31 +314,28 @@ class MultiSocketClient:
 
 def load_trading_pairs() -> List[str]:
     return [
-        "AAVEUSDT",
-        "ADAUSDT",
-        "AGLDUSDT",
-        "ANKRUSDT",
-        "AXSUSDT",
-        "BATUSDT",
-        "BCHUSDT",
-        "BTCUSDT",
-        "CHZUSDT",
-        "COMPUSDT",
-        "CRVUSDT",
-        "DOGEUSDT",
-        "DOTUSDT",
-        "DYDXUSDT",
-        "ETCUSDT",
-        "ETHUSDT",
-        "FILUSDT",
-        "GRTUSDT",
-        "ICPUSDT",
-        "KSMUSDT",
-        "LINKUSDT",
-        "LTCUSDT",
-        # Corrected from ALGOUSDT
-        # Add other pairs as needed
-    ]
+
+    "ENJUSDT",
+    "ETCUSDT",
+    "ETHBTC",
+    "ETHUSDT",
+    "FILUSDT",
+    "FTTUSDT",
+    "GRTUSDT",
+    "ICPUSDT",
+    "KSMUSDT",
+    "LINKUSDT",
+    "LTCUSDT",
+    "LUNCUSDT",
+    "MANAUSDT",
+    "MKRUSDT",
+    "OMGUSDT",
+    "PERPUSDT",
+    "QNTUSDT",
+
+  ]
+
+
 
 
 if __name__ == "__main__":
