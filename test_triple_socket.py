@@ -9,6 +9,7 @@ from pprint import pprint
 import os
 from collections import deque
 import threading
+import logging
 
 
 class SymbolWebSocket:
@@ -23,9 +24,13 @@ class SymbolWebSocket:
         self.lock = threading.Lock()
 
     def _get_subscribe_message(self) -> Dict:
+        # Bybit has a limit of 10 topics per subscription
+        MAX_TOPICS = 10
+        symbols_batch = self.symbols[:MAX_TOPICS]
+        
         return {
             "op": "subscribe",
-            "args": [f"orderbook.50.{symbol}" for symbol in self.symbols]
+            "args": [f"orderbook.50.{symbol}" for symbol in symbols_batch]
         }
 
     def _update_orderbook(self, symbol: str, bids: List, asks: List):
@@ -77,6 +82,15 @@ class SymbolWebSocket:
     def _on_message(self, ws, message):
         try:
             data = json.loads(message)
+            
+            # Handle subscription responses
+            if 'op' in data and data['op'] == 'subscribe':
+                print(f"Socket {self.socket_id} subscription response: {message}")
+                if not data.get('success'):
+                    print(f"Socket {self.socket_id} subscription failed: {data.get('ret_msg')}")
+                return
+
+            # Handle orderbook data
             if 'topic' in data and 'orderbook' in data['topic']:
                 book_data = data.get('data', {})
                 symbol = book_data.get('s', '')
@@ -97,6 +111,7 @@ class SymbolWebSocket:
 
         except Exception as e:
             print(f"Error in Socket {self.socket_id}: {e}")
+            print(f"Message that caused error: {message}")
 
     def _on_error(self, ws, error):
         print(f"WebSocket error in Socket {self.socket_id} at {datetime.now().isoformat()}: {error}")
@@ -113,9 +128,18 @@ class SymbolWebSocket:
             self._ws_thread()
 
     def _on_open(self, ws):
-        print(
-            f"{datetime.now().strftime('%H:%M:%S.%f')} WebSocket {self.socket_id} connected with {len(self.symbols)} pairs")
-        ws.send(json.dumps(self._get_subscribe_message()))
+        # Split subscriptions into batches of 10
+        MAX_TOPICS = 10
+        for i in range(0, len(self.symbols), MAX_TOPICS):
+            symbols_batch = self.symbols[i:i + MAX_TOPICS]
+            subscribe_msg = {
+                "op": "subscribe",
+                "args": [f"orderbook.50.{symbol}" for symbol in symbols_batch]
+            }
+            print(f"{datetime.now().strftime('%H:%M:%S.%f')} Socket {self.socket_id} subscribing batch {i//MAX_TOPICS + 1}: {json.dumps(subscribe_msg)}")
+            ws.send(json.dumps(subscribe_msg))
+            # Add a small delay between batches to avoid overwhelming the server
+            time.sleep(0.5)
 
     def _ws_thread(self):
         self.ws = websocket.WebSocketApp(
@@ -196,25 +220,8 @@ class MultiSocketClient:
                     # Filter orderbooks with sufficient liquidity
                     valid_orderbooks = {}
                     for symbol, book in self.orderbooks.items():
-
-                            # Calculate totals in USDT
-                            total_bids_value_usdt = sum(price * qty for price, qty in book.get('bids', []))
-                            total_asks_value_usdt = sum(price * qty for price, qty in book.get('asks', []))
-
-                            # Calculate totals in base currency (sum of quantities)
-                            total_bids_volume = sum(qty for _, qty in book.get('bids', []))
-                            total_asks_volume = sum(qty for _, qty in book.get('asks', []))
-
-                            # Get base currency from symbol (remove USDT/USDC suffix)
-                            base_currency = symbol.replace('USDT', '').replace('USDC', '')
-
-                            # Add the book data along with the totals
                             valid_orderbooks[symbol] = {
-                                **book,  # Include all existing book data
-                                'total_bids_value_usdt': round(total_bids_value_usdt, 2),
-                                'total_asks_value_usdt': round(total_asks_value_usdt, 2),
-                                f'total_bids_volume_{base_currency}': round(total_bids_volume, 8),
-                                f'total_asks_volume_{base_currency}': round(total_asks_volume, 8)
+                                **book # Include all existing book data
                             }
 
                 # Get total number of pairs from load_trading_pairs
@@ -313,18 +320,146 @@ class MultiSocketClient:
 
 
 def load_trading_pairs() -> List[str]:
-    return [
+    return ["FETUSDT",
+        "FIDAUSDT",
+        "FILUSDC",
+        "BTCDAI",
+        "BTCEUR",
+        "BTCUSDC",
+        "BTCUSDT",
+        "BTTUSDT",
+        "C98USDT",
+        "CAKEUSDT",
+        "CAPSUSDT",
+        "CELOUSDT",
+        "CGPTUSDT",
+        "CHRPUSDT",
+        "CHZUSDC",
+        "CHZUSDT",
+        "CITYUSDT",
+        "COMPUSDT",
+        "COREUSDT",
+        "COTUSDT",
+        "CTCUSDT",
+        "CYBERUSDT",
+        "DAIUSDT",
+        "DGBUSDT",
+        "DLCUSDT",
+        "DOGEEUR",
+        "XRPUSDT",
+        "EOSUSDT","ETHDAI",
+    "ETHEUR", "ETHUSDC",
+    "ETHUSDT", "GODSUSDT",
+    "GRTUSDT",
+    "GSTSUSDT",
+    "GSTUSDT",
+    "GSWIFTUSDT",
+    "HBARUSDT",
+    "HFTUSDC",
+    "HFTUSDT",
+    "HNTUSDT",
+    "HOOKUSDT",
+    "HVHUSDT",
+    "ICPUSDC",
+    "ICPUSDT",
+    "ICXUSDT",
+    "IDUSDT",
+    "IMXUSDT",
+    "INJUSDT",
+    "INTERUSDT",
+    "IZIUSDT",
+    "JASMYUSDT",
+    "JEFFUSDT",
+    "JSTUSDT",
+    "JUVUSDT",
+    "KASTAUSDT",
+    "KASUSDT",
+    "KAVAUSDT",
+    "KCALUSDT",
+    "KDAUSDT",
+    "KSMUSDT",
+    "LADYSUSDT",
+    "LDOUSDC",
+    "LDOUSDT",
+    "LEVERUSDT",
+    "LINKUSDC",
+    "LINKUSDT",
+    "LMWRUSDT",
+    "LOOKSUSDT",
+    "LRCUSDT",
+    "LTCBTC",
+    "LTCEUR",
+    "LTCUSDC",
+    "LTCUSDT",
+    "LUNAUSDT",
+    "LUNCUSDC",
+    "LUNCUSDT",
+    "MAGICUSDT",
+    "MANABTC",
+    "MANAUSDC",
+    "MANAUSDT",
+    "MASKUSDT",
+    "MBXUSDT",
+    "MCRTUSDT",
+    "MDAOUSDT",
+    "MEEUSDT",
+    "MEMEUSDT",
+    "MINAUSDT",
+    "MIXUSDT",
+    "MKRUSDT",
+    "MNTBTC",
+    "MNTUSDC",
+    "MNTUSDT",
+    "MOVRUSDT",
+    "MPLXUSDT",
+    "MVLUSDT",
+    "MVUSDT",
+    "MXUSDT",
+    "NEARUSDT",
+    "NEONUSDT",
+    "NEXOUSDT",
+    "NFTUSDT",
+    "NYMUSDT",
+    "OASUSDT",
+    "OMGUSDT",
+    "ONEUSDT",
+    "OPUSDC",
+    "OPUSDT",
+    "ORDIUSDT",
+    "ORTUSDT",
+    "PENDLEUSDT",
+    "PEOPLEUSDT",
+    "PEPEUSDT",
+    "PERPUSDT",
+    "PIPUSDT",
+    "POKTUSDT",
+    "POLUSDT",
+    "PPTUSDT",
+    "PRIMEUSDT",
+    "PSGUSDT",
+    "PYUSDUSDT",
+    "QNTUSDT",
+    "QTUMUSDT",
+    "RACAUSDT",
+    "RDNTUSDT",
+    "ROSEUSDT",
+    "RPLUSDT",
+    "RSS3USDT",
+    "RUNEUSDT",
+    "RVNUSDT",
+    "SAILUSDT",
+    "SALDUSDT",
+    "SANDBTC",
+    "SANDUSDC",
+    "SANDUSDT",
+    "SCRTUSDT",
+    "SCUSDT",
+    "SDUSDT",
+    "SEIUSDT",
+    "SHIBUSDC"
 
-    "ENJUSDT",
-    "ETCUSDT",
-    "ETHBTC",
-    "ETHUSDT",
-    "BTCUSDC",
-    "XRPBTC"
 
-    
-
-  ]
+    ]
 
 
 
