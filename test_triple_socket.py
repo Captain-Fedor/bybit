@@ -145,7 +145,8 @@ class SymbolWebSocket:
 
 
 class MultiSocketClient:
-    def __init__(self, symbols: List[str], trading_amounts: Dict[str, float] = None, default_amount: float = 10000, max_pairs_per_socket: int = 150):
+    def __init__(self, symbols: List[str], trading_amounts: Dict[str, float] = None, default_amount: float = 10000,
+                 max_pairs_per_socket: int = 150):
         self.all_symbols = symbols
         self.max_pairs_per_socket = max_pairs_per_socket
         self.orderbooks = {}
@@ -165,7 +166,7 @@ class MultiSocketClient:
     def _check_liquidity(self, symbol: str, book: Dict) -> bool:
         """Check if orderbook has sufficient liquidity for the trading amount"""
         amount = self.trading_amounts.get(symbol, self.default_amount)
-        
+
         if not book.get('bids') or not book.get('asks'):
             return False
 
@@ -186,6 +187,9 @@ class MultiSocketClient:
 
     def _json_writer_task(self):
         """Continuously write updates to JSON file"""
+        # Create the directory if it doesn't exist
+        os.makedirs('test_triple_socket', exist_ok=True)
+        
         while self.json_writer_running:
             if len(self.update_queue) > 0:
                 with self.lock:
@@ -193,27 +197,50 @@ class MultiSocketClient:
                     valid_orderbooks = {}
                     for symbol, book in self.orderbooks.items():
                         if self._check_liquidity(symbol, book):
-                            valid_orderbooks[symbol] = book
+                            # Calculate totals in USDT
+                            total_bids_value_usdt = sum(price * qty for price, qty in book.get('bids', []))
+                            total_asks_value_usdt = sum(price * qty for price, qty in book.get('asks', []))
+                            
+                            # Calculate totals in base currency (sum of quantities)
+                            total_bids_volume = sum(qty for _, qty in book.get('bids', []))
+                            total_asks_volume = sum(qty for _, qty in book.get('asks', []))
+                            
+                            # Get base currency from symbol (remove USDT/USDC suffix)
+                            base_currency = symbol.replace('USDT', '').replace('USDC', '')
+                            
+                            # Add the book data along with the totals
+                            valid_orderbooks[symbol] = {
+                                **book,  # Include all existing book data
+                                'total_bids_value_usdt': round(total_bids_value_usdt, 2),
+                                'total_asks_value_usdt': round(total_asks_value_usdt, 2),
+                                f'total_bids_volume_{base_currency}': round(total_bids_volume, 8),
+                                f'total_asks_volume_{base_currency}': round(total_asks_volume, 8)
+                            }
 
-                    result = {
-                        'timestamp': datetime.now().isoformat(),
-                        'trading_amount_usdt': self.default_amount,
-                        'total_pairs': len(valid_orderbooks),
-                        'socket_distribution': {
-                            f'socket_{i + 1}': len(symbols)
-                            for i, symbols in enumerate(self.socket_symbols)
-                        },
-                        'orderbooks': valid_orderbooks
-                    }
+                # Get total number of pairs from load_trading_pairs
+                expected_pairs = len(load_trading_pairs())
+                actual_pairs = len(valid_orderbooks)
 
-                    try:
-                        with open('triple_socket_result.json', 'w') as f:
-                            json.dump(result, f, indent=2)
-                    except Exception as e:
-                        print(f"Error saving to JSON: {e}")
+                result = {
+                    'timestamp': datetime.now().isoformat(),
+                    'trading_amount_usdt': self.default_amount,
+                    'total_pairs': actual_pairs,
+                    'count_confirmed': actual_pairs == expected_pairs,
+                    'socket_distribution': {
+                        f'socket_{i + 1}': len(symbols)
+                        for i, symbols in enumerate(self.socket_symbols)
+                    },
+                    'orderbooks': valid_orderbooks
+                }
 
-                    # Clear processed updates
-                    self.update_queue.clear()
+                try:
+                    with open('test_triple_socket/result.json', 'w') as f:
+                        json.dump(result, f, indent=2)
+                except Exception as e:
+                    print(f"Error saving to JSON: {e}")
+
+                # Clear processed updates
+                self.update_queue.clear()
 
             time.sleep(0.1)  # Small delay to prevent CPU overuse
 
@@ -262,7 +289,7 @@ class MultiSocketClient:
         for i, symbols in enumerate(self.socket_symbols):
             print(f"Socket {i + 1}: {len(symbols)} pairs")
 
-        print("\nSample of Orderbooks (one from each socket):")
+        print("\nOrderbooks for each socket (first 10 pairs):")
         # Group orderbooks by socket_id
         socket_books = {1: [], 2: [], 3: []}
         for symbol, book in orderbooks.items():
@@ -270,12 +297,12 @@ class MultiSocketClient:
             if socket_id:
                 socket_books[socket_id].append((symbol, book))
 
-        # Print one orderbook from each socket
+        # Print first 10 orderbooks from each socket
         for socket_id in [1, 2, 3]:
             books = socket_books[socket_id]
-            if books:
-                symbol, book = books[0]  # Take the first book from this socket
-                print(f"\n{symbol} (Socket {socket_id}):")
+            print(f"\nSocket {socket_id} orderbooks:")
+            for symbol, book in books[:10]:  # Only show first 10 pairs
+                print(f"\n{symbol}:")
                 if 'bids' in book and 'asks' in book:
                     print("Top 3 Bids:", book['bids'][:3])
                     print("Top 3 Asks:", book['asks'][:3])
@@ -284,11 +311,30 @@ class MultiSocketClient:
 
 def load_trading_pairs() -> List[str]:
     return [
-        "BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "ADAUSDT",
-        "DOGEUSDT", "MATICUSDT", "SOLUSDT", "DOTUSDT", "LTCUSDT",
-        "LINKUSDT", "UNIUSDT", "ATOMUSDT", "AVAXUSDT", "NEARUSDT",
-        "ALGOUSDT", "FTMUSDT", "TRXUSDT", "ETCUSDT", "SANDUSDT"
-        # Add more pairs as needed
+        "AAVEUSDT",
+        "ADAUSDT",
+        "AGLDUSDT",
+        "ANKRUSDT",
+        "AXSUSDT",
+        "BATUSDT",
+        "BCHUSDT",
+        "BTCUSDT",
+        "CHZUSDT",
+        "COMPUSDT",
+        "CRVUSDT",
+        "DOGEUSDT",
+        "DOTUSDT",
+        "DYDXUSDT",
+        "ETCUSDT",
+        "ETHUSDT",
+        "FILUSDT",
+        "GRTUSDT",
+        "ICPUSDT",
+        "KSMUSDT",
+        "LINKUSDT",
+        "LTCUSDT",
+        # Corrected from ALGOUSDT
+        # Add other pairs as needed
     ]
 
 
@@ -297,7 +343,7 @@ if __name__ == "__main__":
 
     # WebSocket parameters
     SLEEP_TIME = 1  # seconds between orderbook updates
-    TRADING_AMOUNT_USDT = 1000  # $100k USDT base trading amount
+    TRADING_AMOUNT_USDT = 10  # $100k USDT base trading amount
 
     trading_pairs = load_trading_pairs()
     client = MultiSocketClient(

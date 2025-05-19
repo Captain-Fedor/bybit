@@ -1,48 +1,12 @@
 import asyncio
 import json
-import requests
-import websockets
 import ssl
-import certifi
 import time
-from typing import List, Dict
 from pathlib import Path
-
-def load_trading_pairs() -> List[str]:
-    pair_socket_dir = Path("pair_socket")
-    
-    # Load verified pairs from all_pairs.json
-    with open(pair_socket_dir / "all_pairs.json", "r") as f:
-        verified_pairs = json.load(f)["verified_pairs"]
-    
-    # Load pairs to avoid from no_adventure.json
-    with open(pair_socket_dir / "no_adventure.json", "r") as f:
-        no_adventure_pairs = json.load(f)
-    
-    # Get the set of verified pairs excluding any that are in no_adventure
-    trading_pairs = [
-        pair for pair in verified_pairs.keys()
-        if pair not in no_adventure_pairs
-    ]
-    
-    if not trading_pairs:
-        raise ValueError("No valid trading pairs found after filtering")
-    
-    return trading_pairs
-
-class SymbolWebSocket:
-    def __init__(self, symbols: List[str], socket_id: int):
-        self.symbols = symbols
-        self.socket_id = socket_id
-        # ... rest of the implementation ...
-
-    def _get_subscribe_message(self) -> Dict:
-        subscription = {
-            "op": "subscribe",
-            "args": [f"orderbook.50.{symbol}" for symbol in self.symbols]
-        }
-        print(f"Socket {self.socket_id} subscribing to: {subscription}")  # Debug print
-        return subscription
+from typing import Dict, List
+import websockets
+import certifi
+import requests
 
 class BybitSpotOrderbookChecker:
     def __init__(self):
@@ -50,7 +14,51 @@ class BybitSpotOrderbookChecker:
         self.verified_pairs: Dict[str, Dict] = {}
         self.verification_timeout = 5
         self.ssl_context = ssl.create_default_context(cafile=certifi.where())
+        self.usdt_prices = {}  # Cache for USDT prices
+
+    def get_usdt_price(self, symbol: str) -> float:
+        """Get price in USDT for a given symbol."""
+        if symbol.endswith('USDT'):
+            return 1.0
+            
+        usdt_symbol = f"{symbol.split(symbol[-3:])[0]}USDT"
         
+        if usdt_symbol in self.verified_pairs:
+            # Use the mid price from the orderbook
+            orderbook = self.verified_pairs[usdt_symbol]
+            if orderbook["bids"] and orderbook["asks"]:
+                return (float(orderbook["bids"][0][0]) + float(orderbook["asks"][0][0])) / 2
+                
+        # If we don't have the price yet, fetch it from the API
+        url = "https://api.bybit.com/v5/market/tickers"
+        params = {"category": "spot", "symbol": usdt_symbol}
+        try:
+            response = requests.get(url, params=params, verify=certifi.where())
+            response.raise_for_status()
+            data = response.json()
+            if data.get("result") and data["result"].get("list"):
+                price = float(data["result"]["list"][0]["lastPrice"])
+                self.usdt_prices[symbol] = price
+                return price
+        except Exception as e:
+            print(f"Error fetching USDT price for {symbol}: {e}")
+        return None
+
+    def calculate_usdt_value(self, symbol: str, orders: List[List[str]]) -> float:
+        """Calculate total value in USDT for a list of orders."""
+        if symbol.endswith('USDT'):
+            return sum(float(price) * float(size) for price, size in orders)
+            
+        usdt_price = self.get_usdt_price(symbol)
+        if usdt_price is None:
+            return 0.0
+            
+        if symbol.endswith('USDT'):
+            return sum(float(price) * float(size) for price, size in orders)
+        else:
+            # For non-USDT pairs, convert to USDT
+            return sum(float(price) * float(size) * usdt_price for price, size in orders)
+
     def get_all_spot_pairs(self) -> List[str]:
         url = "https://api.bybit.com/v5/market/instruments-info"
         params = {"category": "spot"}
@@ -60,15 +68,19 @@ class BybitSpotOrderbookChecker:
             response.raise_for_status()
             data = response.json()
             
-            pairs = []
-            if data.get("result") and data["result"].get("list"):
-                for instrument in data["result"]["list"]:
-                    if instrument.get("status") == "Trading":
-                        pairs.append(instrument["symbol"])
-            return sorted(pairs)
+            if data["retCode"] == 0 and "list" in data["result"]:
+                return [item["symbol"] for item in data["result"]["list"]]
         except Exception as e:
             print(f"Error fetching pairs: {e}")
-            return []
+        
+        return []
+
+    async def verify_pairs_batch(self, pairs: List[str], batch_size: int = 10):
+        for i in range(0, len(pairs), batch_size):
+            batch = pairs[i:i + batch_size]
+            tasks = [self.verify_orderbook(pair) for pair in batch]
+            await asyncio.gather(*tasks)
+            print(f"Processed {min(i + batch_size, len(pairs))}/{len(pairs)} pairs")
 
     async def verify_orderbook(self, symbol: str) -> bool:
         try:
@@ -86,15 +98,15 @@ class BybitSpotOrderbookChecker:
                 while time.time() - start_time < self.verification_timeout:
                     response = await ws.recv()
                     data = json.loads(response)
-                
+                    
                     if data.get("op") == "subscribe" and data.get("success"):
                         continue
-                
+                    
                     if "data" in data and "b" in data["data"] and "a" in data["data"]:
                         # Get all bids and asks
                         all_bids = data["data"]["b"]
                         all_asks = data["data"]["a"]
-                    
+                        
                         if len(all_bids) > 0 or len(all_asks) > 0:
                             # Calculate total value for entire orderbook
                             total_bids_value = sum(float(price) * float(size) for price, size in all_bids)
@@ -140,19 +152,13 @@ class BybitSpotOrderbookChecker:
                                 value = float(price) * float(size)
                                 print(f"  {price} - {size} (Value: {round(value, 2)} {orderbook_data['quote_currency']})")
                             print("-" * 40)
-                        
+                            
                             return True
-            
-            return False
+                
+                return False
         except Exception as e:
             print(f"Error verifying {symbol}: {e}")
             return False
-
-    async def verify_pairs_batch(self, pairs: List[str], batch_size: int = 5):
-        for i in range(0, len(pairs), batch_size):
-            batch = pairs[i:i + batch_size]
-            tasks = [self.verify_orderbook(pair) for pair in batch]
-            await asyncio.gather(*tasks)
 
     def run_verification(self, debug_limit=None):
         print("Fetching all spot trading pairs...")
@@ -171,7 +177,7 @@ class BybitSpotOrderbookChecker:
         pair_socket_dir = Path("pair_socket")
         pair_socket_dir.mkdir(exist_ok=True)
         
-        # Save results to pair_socket/all_pairs.json
+        # Save full orderbook results to pair_socket/all_pairs.json
         result = {
             "timestamp": int(time.time()),
             "verified_pairs": self.verified_pairs
@@ -179,20 +185,45 @@ class BybitSpotOrderbookChecker:
         
         with open(pair_socket_dir / 'all_pairs.json', 'w') as f:
             json.dump(result, f, indent=2)
+            
+        # Save just the pair names to pairs_names_only.json
+        pairs_names = {
+            "timestamp": int(time.time()),
+            "total_pairs": len(self.verified_pairs),
+            "pairs": sorted(list(self.verified_pairs.keys()))
+        }
+        
+        with open(pair_socket_dir / 'pairs_names_only.json', 'w') as f:
+            json.dump(pairs_names, f, indent=2)
+        
+        print(f"\nSaved {len(self.verified_pairs)} pairs to all_pairs.json")
+        print(f"Saved pair names to pairs_names_only.json")
         
         return self.verified_pairs
 
 if __name__ == "__main__":
-    try:
-        import websockets
-        import certifi
-    except ImportError:
-        print("Installing required libraries...")
-        import subprocess
-        subprocess.check_call(["pip", "install", "websockets", "certifi"])
-        import websockets
-        import certifi
-    
     checker = BybitSpotOrderbookChecker()
-    verified_pairs = checker.run_verification(debug_limit=10)  # Set debug limit to 10 pairs or if nothing
-    # it will download all pairs
+    verified_pairs = checker.run_verification(debug_limit=40)  # Remove debug_limit to check all pairs
+    # Or use debug_limit to test with fewer pairs:
+    # verified_pairs = checker.run_verification(debug_limit=10)
+
+    # Additional check for specific pair
+    specific_pair = "BTCUSDT"  # You can change this to any valid trading pair
+    print(f"\nChecking specific pair: {specific_pair}...")
+    asyncio.run(checker.verify_orderbook(specific_pair))
+
+    # Create pair_socket directory if it doesn't exist
+    pair_socket_dir = Path("pair_socket")
+    pair_socket_dir.mkdir(exist_ok=True)
+
+    # Save the single pair data to one_pair.json
+    result = {
+        "timestamp": int(time.time()),
+        "pair": specific_pair,
+        "orderbook_data": checker.verified_pairs[specific_pair]
+    }
+
+    with open(pair_socket_dir / 'one_pair.json', 'w') as f:
+        json.dump(result, f, indent=2)
+
+    print(f"Saved {specific_pair} orderbook data to one_pair.json")
