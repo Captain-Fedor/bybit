@@ -203,7 +203,7 @@ class BybitSpotOrderbookChecker:
 
 if __name__ == "__main__":
     checker = BybitSpotOrderbookChecker()
-    verified_pairs = checker.run_verification(debug_limit=40)  # Remove debug_limit to check all pairs
+    verified_pairs = checker.run_verification(debug_limit=50)  # Remove debug_limit to check all pairs
     # Or use debug_limit to test with fewer pairs:
     # verified_pairs = checker.run_verification(debug_limit=10)
 
