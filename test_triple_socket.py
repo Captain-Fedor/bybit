@@ -196,18 +196,18 @@ class MultiSocketClient:
                     # Filter orderbooks with sufficient liquidity
                     valid_orderbooks = {}
                     for symbol, book in self.orderbooks.items():
-                        if self._check_liquidity(symbol, book):
+
                             # Calculate totals in USDT
                             total_bids_value_usdt = sum(price * qty for price, qty in book.get('bids', []))
                             total_asks_value_usdt = sum(price * qty for price, qty in book.get('asks', []))
-                            
+
                             # Calculate totals in base currency (sum of quantities)
                             total_bids_volume = sum(qty for _, qty in book.get('bids', []))
                             total_asks_volume = sum(qty for _, qty in book.get('asks', []))
-                            
+
                             # Get base currency from symbol (remove USDT/USDC suffix)
                             base_currency = symbol.replace('USDT', '').replace('USDC', '')
-                            
+
                             # Add the book data along with the totals
                             valid_orderbooks[symbol] = {
                                 **book,  # Include all existing book data
@@ -319,19 +319,10 @@ def load_trading_pairs() -> List[str]:
     "ETCUSDT",
     "ETHBTC",
     "ETHUSDT",
-    "FILUSDT",
-    "FTTUSDT",
-    "GRTUSDT",
-    "ICPUSDT",
-    "KSMUSDT",
-    "LINKUSDT",
-    "LTCUSDT",
-    "LUNCUSDT",
-    "MANAUSDT",
-    "MKRUSDT",
-    "OMGUSDT",
-    "PERPUSDT",
-    "QNTUSDT",
+    "BTCUSDC",
+    "XRPBTC"
+
+    
 
   ]
 
