@@ -2,9 +2,12 @@ from pybit.unified_trading import HTTP
 import pandas as pd
 import time
 import json
+import requests
+import certifi
+from typing import List
 
 
-class BybitTriangleArbitrage:
+class BybitTradingPairList:
     def __init__(self, api_key, api_secret, testnet=False):
         self.session = HTTP(
             testnet=testnet,
@@ -16,80 +19,42 @@ class BybitTriangleArbitrage:
         self.trade_amount = 1000
         self.depth = 100
 
-    def get_tickers(self):
-        """Get all tickers from Bybit excluding adventure tokens"""
+    # def get_tickers(self):
+    #     """Get all tickers from Bybit excluding adventure tokens"""
+    #     try:
+    #         tickers = self.session.get_tickers(category="spot")
+    #         # Filter out adventure tokens (symbols starting with 'A')
+    #         filtered_tickers = [
+    #             ticker for ticker in tickers['result']['list']
+    #             if not ticker['symbol'].startswith('A')
+    #         ]
+    #         _filtered_tickers = [
+    #             pair['symbol'] for pair in filtered_tickers
+    #         ]
+    #         with open('tickers.json', 'w') as f:
+    #             # json.dump({'result': {'list': _filtered_tickers}}, f)
+    #             json.dump(_filtered_tickers, f)
+    #         return _filtered_tickers
+    #     except Exception as e:
+    #         print(f"Error fetching tickers: {e}")
+    #         return None
+
+    def get_tickers(self) -> List[str]:  # from pair_socket_downloadable
+        url = "https://api.bybit.com/v5/market/instruments-info"
+        params = {"category": "spot"}
+
         try:
-            tickers = self.session.get_tickers(category="spot")
-            # Filter out adventure tokens (symbols starting with 'A')
-            filtered_tickers = [
-                ticker for ticker in tickers['result']['list']
-                if not ticker['symbol'].startswith('A')
-            ]
-            _filtered_tickers = [
-                pair['symbol'] for pair in filtered_tickers
-            ]
-            with open('tickers.json', 'w') as f:
-                # json.dump({'result': {'list': _filtered_tickers}}, f)
-                json.dump(_filtered_tickers, f)
-            return _filtered_tickers
+            response = requests.get(url, params=params, verify=certifi.where())
+            response.raise_for_status()
+            data = response.json()
+
+            if data["retCode"] == 0 and "list" in data["result"]:
+                return [item["symbol"] for item in data["result"]["list"]]
+
         except Exception as e:
-            print(f"Error fetching tickers: {e}")
-            return None
+            print(f"Error fetching pairs: {e}")
 
-    def get_orderbook(self, symbol):
-        """Get orderbook for a given symbol"""
-        try:
-            orderbook = self.session.get_orderbook(
-                category="spot",
-                symbol=symbol,
-                limit=1000
-            )
-            return orderbook
-        except Exception as e:
-            print(f"Error checking orderbook for {symbol}: {e}")
-            return False
-
-    def check_orderbook_depth(self, symbol):
-        """Check if there's enough liquidity in the orderbook"""
-        orderbook = self.get_orderbook(symbol=symbol)
-
-            # Correct access to orderbook data structure
-        if orderbook['result']['a'] and orderbook['result']['b']:
-            bids = orderbook['result']['b']  # Bids are under 'b'
-            asks = orderbook['result']['a']  # Asks are under 'a' [price,quantity]
-
-                # Calculate cumulative volumes
-            bid_liquidity = sum(int((float(bid[0]) * float(bid[1]))) for bid in bids[:self.depth])
-            ask_liquidity = sum(int((float(ask[0]) * float(ask[1]))) for ask in asks[:self.depth])
-                # print(f"Liquidity for {symbol}: {bid_liquidity} / {ask_liquidity}")
-
-                # Sum top 10 asks
-            return bid_liquidity >= self.trade_amount and ask_liquidity >= self.trade_amount
-        else:
-            print(f"Unexpected orderbook structure for {symbol}: {orderbook}")
-            return False
-
-    def calculate_crypto_amount(self, orderbook, trade_amount):
-        asks = orderbook['result']['a']
-        sum_amount = 0
-        crypto_count = 0
-
-        # Pre-convert strings to floats to avoid repeated conversions
-        asks_float = [(float(price), float(amount)) for price, amount in asks]
-
-        for price, amount in asks_float:
-            position_total = price * amount
-            if sum_amount + position_total <= trade_amount:
-                sum_amount += position_total
-                crypto_count += amount
-            else:
-                # Calculate remaining amount needed
-                remaining = trade_amount - sum_amount
-                partial_amount = remaining / price
-                crypto_count += partial_amount
-                break
-
-        return crypto_count
+        return []
 
     def find_triangular_pairs(self, base_currency="USDT"):
         """Find all possible triangular pairs with the given base currency"""
@@ -117,18 +82,58 @@ class BybitTriangleArbitrage:
                         if pair3 == f"{token2}{base_currency}":
                             # Check orderbook depth for all pairs
                             # Example trade amount in USDT
-                                triangular_pairs.append({
-                                    'pair1': symbol1,
-                                    'pair2': pair2,
-                                    'pair3': pair3
-                                })
+                            triangular_pairs.append({
+                                'pair1': symbol1,
+                                'pair2': pair2,
+                                'pair3': pair3
+                            })
 
         return triangular_pairs
 
-    def calculate_arbitrage(self, triangle):
-        """Calculate potential arbitrage profit"""
-        # Initial amount of base currency
+    def filter_unique_triangles(self, triangular_pairs):
+        """
+        Filter out duplicate triangular pairs regardless of their order.
+        
+        Args:
+            triangular_pairs (list): List of dictionaries containing triangular pairs
+            
+        Returns:
+            list: Filtered list containing only unique triangular pairs
+        """
+        triangle_pairs_all = []
+        for triangle in triangular_pairs:
+            triangle_pairs_all.append(triangle['pair1'])
+            triangle_pairs_all.append(triangle['pair2'])
+            triangle_pairs_all.append(triangle['pair3'])
+            triangle_pairs_all = list(set(triangle_pairs_all))
+        return list(set(triangle_pairs_all))
 
+
+class BybitTriangleCalculation:
+    def __init__(self, trade_amount=1000):
+        """
+        Initialize the calculation class
+        
+        Args:
+            trade_amount (float): Initial amount for trading calculations (in USDT)
+        """
+        self.trade_amount = trade_amount
+
+    def calculate_arbitrage(self, triangle):
+        """
+        Calculate potential arbitrage profit
+        
+        Args:
+            triangle (dict): Dictionary containing trading pairs and their prices
+                           Expected format: {
+                               'price1': float,
+                               'price2': float,
+                               'price3': float
+                           }
+        
+        Returns:
+            float: Profit percentage
+        """
         # Forward trade route
         amount1 = self.trade_amount / triangle['price1']  # USDT -> Token1
         amount2 = amount1 * triangle['price2']  # Token1 -> Token2
@@ -139,14 +144,23 @@ class BybitTriangleArbitrage:
 
         return profit_percent
 
-    def scan_opportunities(self, min_profit=0.2, max_profit=3):
-        """Scan for triangular arbitrage opportunities"""
-        triangles = self.find_triangular_pairs()
+    def scan_opportunities(self, triangles, min_profit=0.2, max_profit=3):
+        """
+        Scan for triangular arbitrage opportunities within profit range
+        
+        Args:
+            triangles (list): List of triangle dictionaries with price information
+            min_profit (float): Minimum profit percentage to consider (default: 0.2)
+            max_profit (float): Maximum profit percentage to consider (default: 3)
+        
+        Returns:
+            list: List of dictionaries containing profitable opportunities
+        """
         opportunities = []
 
         for triangle in triangles:
             profit = self.calculate_arbitrage(triangle)
-            if profit > min_profit and profit < max_profit:  # Only show opportunities above minimum profit threshold
+            if min_profit < profit < max_profit:
                 opportunities.append({
                     'pairs': [triangle['pair1'], triangle['pair2'], triangle['pair3']],
                     'profit_percent': profit
@@ -157,31 +171,17 @@ class BybitTriangleArbitrage:
 
 # Example usage
 if __name__ == "__main__":
-    arbitrage_bot = BybitTriangleArbitrage(api_key='qwert', api_secret='1234', testnet=True)
+    arbitrage_bot = BybitTradingPairList(api_key='qwert', api_secret='1234', testnet=False)
 
-
-    l=arbitrage_bot.find_triangular_pairs()
+    triangles = arbitrage_bot.find_triangular_pairs()
     pairs = arbitrage_bot.get_tickers()
+    unique_triangle_pairs = arbitrage_bot.filter_unique_triangles(triangles)
+    with open('unique_triangle_pairs.json', 'w') as f:
+        json.dump(unique_triangle_pairs, f)
+
     print(len(pairs))
     print(pairs)
-    print(len(l))
-    print(l)
-
-
-
-
-    # # Initialize with your API keys (use testnet first!)
-    # api_key = "6gfeT8jTRhfF4Hf3cV"
-    # api_secret = "uIliSYcaPnykJXFqGkbIZx89Nsp7lUOl1m0Y"
-    #
-    # arbitrage_bot = BybitTriangleArbitrage(api_key, api_secret, testnet=True)
-    #
-    # while True:
-    #     print("Scanning for arbitrage opportunities...")
-    #     opportunities = arbitrage_bot.scan_opportunities()
-    #
-    #     for opp in opportunities:
-    #         print(f"Found opportunity: {opp['pairs']}")
-    #         print(f"Potential profit: {opp['profit_percent']:.2f}%")
-    #
-    #     time.sleep(1)  # Wait 1 second before next scan
+    print(f'find_triangular_pairs: {len(triangles)}')
+    print(triangles)
+    print(f'number of unique pairs {len(unique_triangle_pairs)}')
+    print(unique_triangle_pairs)
