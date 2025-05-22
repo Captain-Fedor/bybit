@@ -25,8 +25,11 @@ if __name__ == "__main__":
     triangles = scanner.find_triangular_pairs()
     # pairs = scanner.get_tickers() # all pairs from bybit for debug only
     unique_triangle_pairs = scanner.filter_unique_triangles(triangles)
+    with open('triangles.json', 'w') as f:
+        json.dump(triangles, f)
     with open('unique_triangle_pairs.json', 'w') as f:
         json.dump(unique_triangle_pairs, f)
+
 
     # print(len(pairs))
     # print(pairs)
@@ -45,7 +48,9 @@ if __name__ == "__main__":
 
     # WebSocket parameters
     SLEEP_TIME = 1  # seconds between orderbook updates
-    TRADING_AMOUNT_USDT = 10
+    TRADING_AMOUNT_USDT = 1000
+    MIN_PROFIT = 1 # in precents
+    MAX_PROFIT = 50 # in precents
 
 
     trading_pairs = unique_triangle_pairs
@@ -53,7 +58,7 @@ if __name__ == "__main__":
         symbols=trading_pairs,
         default_amount=TRADING_AMOUNT_USDT
     )
-    triangle_monitor = BybitTriangleCalculation(trade_amount=TRADING_AMOUNT_USDT)
+    triangle_monitor = BybitTriangleCalculation(trade_amount=TRADING_AMOUNT_USDT, min_profit=MIN_PROFIT, max_profit=MAX_PROFIT)
 
     try:
         client.start()
@@ -63,13 +68,28 @@ if __name__ == "__main__":
         print(f"Update interval: {SLEEP_TIME} seconds")
 
         while True:
+            # Get current orderbooks
             client.print_orderbooks()
-            orderbooks = {'timestamp': datetime.now().isoformat(), 'orderbooks': client.get_orderbooks()
+            current_orderbooks = client.get_orderbooks()
+            
+            # Save complete orderbook data to file
+            orderbooks_data = {
+                'timestamp': datetime.now().isoformat(), 
+                'orderbooks': current_orderbooks
             }
-            with open('orderbooks.json', 'w') as f:
-                json.dump(orderbooks, f, indent=2)
-
-            time.sleep(SLEEP_TIME)  # Use the defined sleep parameter
+            
+            try:
+                with open('orderbooks.json', 'w') as f:
+                    json.dump(orderbooks_data, f, indent=2)
+            except Exception as e:
+                print(f"Error saving orderbooks: {e}")
+            
+            # Run arbitrage calculation with current orderbooks
+            print("\nRunning arbitrage calculation...")
+            triangle_monitor.calculate_arbitrage(current_orderbooks)
+            
+            # Clear screen and wait before next update
+            time.sleep(SLEEP_TIME)
             print("\033[2J\033[H")  # Clear screen
 
     except KeyboardInterrupt:
