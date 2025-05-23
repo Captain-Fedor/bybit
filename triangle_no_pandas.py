@@ -163,20 +163,33 @@ class BybitTriangleCalculation:
         remaining_sum = trade_amount
         
         try:
-            for price_qty in orderbook_data:
-                # Convert string values to float
-                price = float(price_qty[0])
-                qty = float(price_qty[1])
-                
-                if remaining_sum >= price * qty:
-                    # Can buy/sell all quantity at this price
-                    total_quantity += qty
-                    remaining_sum -= price * qty
+            for value, quantity in orderbook_data:
+                if remaining_sum >= value * quantity:
+                    # Can buy all quantity at this price
+                    total_quantity += quantity
+                    remaining_sum -= value * quantity
                 else:
-                    # Can only buy/sell partial quantity
-                    possible_quantity = remaining_sum / price
+                    # Can only buy partial quantity
+                    possible_quantity = remaining_sum / value
                     total_quantity += possible_quantity
                     break
+
+
+            # for price_qty in orderbook_data:
+            #     # Convert string values to float
+            #     price = float(price_qty[0])
+            #     qty = float(price_qty[1])
+            #
+            #     if remaining_sum >= price * qty:
+            #         # Can buy/sell all quantity at this price
+            #         total_quantity += qty
+            #         remaining_sum -= price * qty
+            #     else:
+            #         # Can only buy/sell partial quantity
+            #         possible_quantity = remaining_sum / price
+            #         total_quantity += possible_quantity
+            #         break
+
         except Exception as e:
             print(f"Error processing {status} for {pair}: {e}")
             return 0
