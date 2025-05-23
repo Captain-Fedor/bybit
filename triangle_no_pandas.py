@@ -215,7 +215,7 @@ class BybitTriangleCalculation:
             
         # Ensure we have orderbooks and triangles data
         if not self.orderbooks:
-            print("No orderbooks available for arbitrage calculation")
+            print("No orderbooks available for arbitrage calculatio n")
             return results
             
         if not self.triangles:
