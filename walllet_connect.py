@@ -1,219 +1,267 @@
-import asyncio
 import json
-import websockets
 import time
-import hmac
-import hashlib
-import ssl
+import asyncio
+from typing import List, Dict
+from decimal import Decimal
+from pybit.unified_trading import HTTP
+from pybit.unified_trading import WebSocket
 from dotenv import load_dotenv
 import os
-from pybit.unified_trading import HTTP
-from typing import Dict, Any
-import backoff
 
-class BybitWalletManager:
-    def __init__(self, testnet=True):
-        load_dotenv()
-        self.api_key = os.getenv('BYBIT_API_KEY')
-        self.api_secret = os.getenv('BYBIT_API_SECRET')
+# Load environment variables from .env file
+load_dotenv()
+
+class WalletManager:
+    def __init__(self, api_key: str, api_secret: str, testnet: bool = True):
+        """
+        Initialize WalletManager with API credentials for Unified Trading Account
+        """
+        self.api_key = api_key
+        self.api_secret = api_secret
+        self.testnet = testnet
         
-        # Initialize client with V5 API
+        # Initialize HTTP session for unified trading
         self.session = HTTP(
+            testnet=self.testnet,
             api_key=self.api_key,
-            api_secret=self.api_secret,
-            testnet=testnet
+            api_secret=self.api_secret
         )
-        
-        if testnet:
-            self.ws_url = "wss://stream-testnet.bybit.com/v5/private"
-        else:
-            self.ws_url = "wss://stream.bybit.com/v5/private"
-            
-        self.ws = None
-        self.should_reconnect = True
-        self.reconnect_interval = 5
-        self.max_retries = 3
 
-    def get_wallet_balance(self) -> Dict[str, Any]:
-        """Get wallet balance for the Unified Trading Account"""
+    def get_wallet_balance(self):
+        """Get current unified account wallet balance"""
         try:
-            # Get balance for all coins by not specifying the 'coin' parameter
-            response = self.session.get_wallet_balance(
-                accountType="UNIFIED"
-            )
-            
-            if response and 'result' in response:
-                # Extract the list of coins from the response
-                coins = response['result']['list'][0]['coin']
-                print("\nWallet Balances:")
-                print("-" * 50)
-                print(f"{'Currency':<10} {'Total':<15} {'Available':<15}")
-                print("-" * 50)
-                
-                for coin in coins:
-                    currency = coin['coin']
-                    # Handle empty string values
-                    total = float(coin['walletBalance']) if coin['walletBalance'] else 0.0
-                    available = float(coin['availableToWithdraw']) if coin['availableToWithdraw'] else 0.0
-                    
-                    # Only show coins with non-zero balance
-                    if total > 0:
-                        print(f"{currency:<10} {total:<15.8f} {available:<15.8f}")
-                
-                # If no non-zero balances were found
-                if not any(float(coin['walletBalance']) if coin['walletBalance'] else 0.0 > 0 for coin in coins):
-                    print("No non-zero balances found")
-                print("-" * 50)
-            
-            return response
+            balance = self.session.get_wallet_balance(accountType="UNIFIED")
+            print("\nWallet Balance:")
+            print(json.dumps(balance, indent=2))
+            return balance
         except Exception as e:
             print(f"Error getting wallet balance: {e}")
             return None
 
-    def generate_signature(self, expires: str) -> str:
-        """Generate authentication signature"""
-        signature = hmac.new(
-            bytes(self.api_secret, "utf-8"),
-            bytes(f"GET/realtime{expires}", "utf-8"),
-            digestmod=hashlib.sha256
-        )
-        return signature.hexdigest()
+    def close(self):
+        """Close all connections"""
+        pass
 
-    async def connect_websocket(self):
-        """Establish WebSocket connection"""
-        while self.should_reconnect:
+class TriangleWalletExecutor:
+    def __init__(self, wallet_manager: WalletManager, initial_trading_amount: str):
+        self.wallet_manager = wallet_manager
+        self.initial_amount = initial_trading_amount
+        self.current_orders = {}
+        self.trade_confirmations = {}
+        self.executed_amounts = {}
+
+    def _verify_sufficient_balance(self, balance, first_pair: str) -> bool:
+        """Verify if there's sufficient balance for the first trade"""
+        try:
+            quote_currency = first_pair[3:]  # Extract the quote currency (e.g., USDT from ADAUSDT)
+            required_amount = Decimal(self.initial_amount)
+            
+            # Get the coin list from the unified account response
+            coin_list = balance['result']['list'][0]['coin']
+            
+            for coin in coin_list:
+                if coin['coin'] == quote_currency:
+                    available = Decimal(str(coin['equity']))  # Use 'equity' instead of 'availableToWithdraw'
+                    print(f"Available {quote_currency} balance: {available}")
+                    print(f"Required amount: {required_amount}")
+                    return available >= required_amount
+            
+            print(f"Could not find {quote_currency} in wallet")
+            return False
+        except Exception as e:
+            print(f"Error verifying balance: {e}")
+            print(f"Balance response: {json.dumps(balance, indent=2)}")
+            return False
+
+    async def _execute_trade(self, symbol: str, side: str, quantity: str) -> Dict:
+        try:
+            print(f"Placing {side} order for {symbol}, quantity: {quantity}")
+            order_response = self.wallet_manager.session.place_order(
+                category="spot",
+                symbol=symbol,
+                side=side,
+                orderType="MARKET",
+                qty=str(quantity),
+                accountType="UNIFIED"  # Specify unified account type
+            )
+            
+            self.current_orders[order_response['orderId']] = {
+                'symbol': symbol,
+                'status': 'PENDING'
+            }
+            
+            return order_response
+
+        except Exception as e:
+            print(f"Error placing order for {symbol}: {e}")
+            raise
+
+    async def _wait_for_confirmation(self, order_id: str, timeout: int = 30) -> bool:
+        start_time = time.time()
+        while time.time() - start_time < timeout:
             try:
-                ssl_context = ssl.create_default_context()
-                ssl_context.check_hostname = False
-                ssl_context.verify_mode = ssl.CERT_NONE
-
-                async with websockets.connect(
-                    self.ws_url,
-                    ssl=ssl_context,
-                    ping_interval=20,
-                    ping_timeout=10
-                ) as websocket:
-                    self.ws = websocket
-                    print("WebSocket connected successfully")
-                    
-                    # Authentication
-                    expires = str(int((time.time() + 10) * 1000))
-                    signature = self.generate_signature(expires)
-                    
-                    auth_message = {
-                        "req_id": "auth",
-                        "op": "auth",
-                        "args": [self.api_key, expires, signature]
-                    }
-                    
-                    await websocket.send(json.dumps(auth_message))
-                    auth_resp = await websocket.recv()
-                    print(f"Auth response: {auth_resp}")
-
-                    # Subscribe to topics
-                    subscribe_message = {
-                        "req_id": "spot",
-                        "op": "subscribe",
-                        "args": ["order"]
-                    }
-                    
-                    await websocket.send(json.dumps(subscribe_message))
-                    sub_resp = await websocket.recv()
-                    print(f"Subscribe response: {sub_resp}")
-
-                    # Main message loop
-                    while True:
-                        try:
-                            message = await websocket.recv()
-                            await self.handle_message(json.loads(message))
-                        except Exception as e:
-                            print(f"Error in message loop: {e}")
-                            break
-
+                order_status = self.wallet_manager.session.get_order_history(
+                    category="spot",
+                    orderId=order_id,
+                    accountType="UNIFIED"  # Specify unified account type
+                )
+                
+                if order_status['result']['list'][0]['status'] == 'Filled':
+                    self.trade_confirmations[order_id] = order_status['result']['list'][0]
+                    print(f"Order {order_id} filled. Executed quantity: {order_status['result']['list'][0]['execQty']}")
+                    return True
+                
+                elif order_status['result']['list'][0]['status'] in ['Rejected', 'Cancelled']:
+                    print(f"Order {order_id} failed with status: {order_status['result']['list'][0]['status']}")
+                    return False
+                
+                await asyncio.sleep(1)
+                
             except Exception as e:
-                print(f"WebSocket connection error: {e}")
-                if self.should_reconnect:
-                    print(f"Reconnecting in {self.reconnect_interval} seconds...")
-                    await asyncio.sleep(self.reconnect_interval)
+                print(f"Error checking order status: {e}")
+                return False
+                
+        print(f"Timeout waiting for order {order_id} confirmation")
+        return False
 
-    async def handle_message(self, message: Dict):
-        """Handle incoming WebSocket messages"""
-        print(f"Received message: {message}")
+    async def execute_triangle_trade(self, trading_pairs: List[str]):
+        """
+        Execute triangle trades in sequence using unified account
+        """
+        if len(trading_pairs) != 3:
+            raise ValueError("Must provide exactly 3 trading pairs")
 
-    async def start(self):
-        """Start the WebSocket connection"""
-        retry_count = 0
-        while retry_count < self.max_retries:
-            try:
-                await self.connect_websocket()
-                break
-            except Exception as e:
-                retry_count += 1
-                print(f"Connection attempt {retry_count} failed: {e}")
-                if retry_count < self.max_retries:
-                    await asyncio.sleep(self.reconnect_interval)
-                else:
-                    print("Max retries reached. Stopping connection attempts.")
-                    break
+        # Check wallet balance before trading
+        balance = self.wallet_manager.get_wallet_balance()
+        if not self._verify_sufficient_balance(balance, trading_pairs[0]):
+            raise ValueError(f"Insufficient balance for initial trade of {self.initial_amount}")
 
-    async def stop(self):
-        """Stop the WebSocket connection"""
-        self.should_reconnect = False
-        if self.ws:
-            await self.ws.close()
+        try:
+            # Execute trades as before...
+            # First trade
+            print(f"\nExecuting first trade for {trading_pairs[0]}")
+            first_order = await self._execute_trade(
+                symbol=trading_pairs[0],
+                side="BUY",
+                quantity=self.initial_amount
+            )
+            
+            if not await self._wait_for_confirmation(first_order['orderId']):
+                raise Exception(f"First trade {trading_pairs[0]} failed to confirm")
+            
+            first_filled_qty = self.trade_confirmations[first_order['orderId']]['execQty']
+            self.executed_amounts[trading_pairs[0]] = first_filled_qty
+            print(f"First trade completed. Received: {first_filled_qty}")
 
-async def main():
-    wallet_manager = None
-    try:
-        wallet_manager = BybitWalletManager(testnet=True)
-        print("Initializing wallet manager...")
-        
-        balance = wallet_manager.get_wallet_balance()
-        if balance:
-            print(f"Wallet balance: {balance}")
-        else:
-            print("Failed to get wallet balance")
+            # Second trade
+            print(f"\nExecuting second trade for {trading_pairs[1]}")
+            second_order = await self._execute_trade(
+                symbol=trading_pairs[1],
+                side="SELL",
+                quantity=first_filled_qty
+            )
+            
+            if not await self._wait_for_confirmation(second_order['orderId']):
+                raise Exception(f"Second trade {trading_pairs[1]} failed to confirm")
+            
+            second_filled_qty = self.trade_confirmations[second_order['orderId']]['execQty']
+            self.executed_amounts[trading_pairs[1]] = second_filled_qty
+            print(f"Second trade completed. Received: {second_filled_qty}")
 
-        print("Starting WebSocket connection...")
-        await wallet_manager.start()
-        
-    except KeyboardInterrupt:
-        print("\nReceived keyboard interrupt, shutting down...")
-    except Exception as e:
-        print(f"Unexpected error: {e}")
-    finally:
-        if wallet_manager:
-            await wallet_manager.stop()
-            print("Wallet manager stopped")
+            # Third trade
+            print(f"\nExecuting third trade for {trading_pairs[2]}")
+            third_order = await self._execute_trade(
+                symbol=trading_pairs[2],
+                side="BUY",
+                quantity=second_filled_qty
+            )
+            
+            if not await self._wait_for_confirmation(third_order['orderId']):
+                raise Exception(f"Third trade {trading_pairs[2]} failed to confirm")
+            
+            third_filled_qty = self.trade_confirmations[third_order['orderId']]['execQty']
+            self.executed_amounts[trading_pairs[2]] = third_filled_qty
+            print(f"Third trade completed. Received: {third_filled_qty}")
+
+            return {
+                "status": "success",
+                "orders": [first_order, second_order, third_order],
+                "executed_amounts": self.executed_amounts
+            }
+
+        except Exception as e:
+            print(f"Error executing triangle trade: {e}")
+            return {
+                "status": "error",
+                "message": str(e),
+                "executed_amounts": self.executed_amounts
+            }
+
+import json
+import time
+import asyncio
+from typing import List, Dict
+from decimal import Decimal
+from pybit.unified_trading import HTTP
+from pybit.unified_trading import WebSocket
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from .env file
+load_dotenv()
 
 if __name__ == "__main__":
-    # Trading parameters
-    trading_pair = "BTCUSDT"  # The trading pair you want to trade
-    side = "BUY"             # "BUY" or "SELL"
-    quantity = 20         # Amount of the base asset to trade
+    # Load environment variables
+    load_dotenv()
     
-    # Initialize the wallet manager
-    wallet_manager = BybitWalletManager(testnet=True)
+    # Get trading amount from environment variable with validation
+    trading_amount = os.getenv('TRADING_AMOUNT_USDT')
+    if not trading_amount:
+        raise ValueError("TRADING_AMOUNT_USDT not found in .env file")
     
     try:
-        # Get current balance
-        wallet_manager.get_wallet_balance()
-        
-        # Execute the trade
-        print(f"\nExecuting {side} order for {quantity} {trading_pair}...")
-        order_response = wallet_manager.session.place_order(
-            category="spot",
-            symbol=trading_pair,
-            side=side,
-            orderType="MARKET",  # Using market order for immediate execution
-            qty=str(quantity)
-        )
-        
-        print("\nOrder Response:")
-        print(order_response)
-        
-    except Exception as e:
-        print(f"Error executing trade: {e}")
-    finally:
-        # Clean up
-        asyncio.run(wallet_manager.stop())
+        float(trading_amount)  # Validate that it's a valid number
+    except ValueError:
+        raise ValueError("TRADING_AMOUNT_USDT must be a valid number")
+    
+    # Get testnet setting from environment variable
+    testnet_value = os.getenv('TESTNET', 'true').lower()
+    testnet = testnet_value in ('true', '1', 'yes')
+    
+    api_key = os.getenv('BYBIT_API_KEY')
+    api_secret = os.getenv('BYBIT_API_SECRET')
+    
+    if not api_key or not api_secret:
+        raise ValueError("API credentials not found in .env file")
+    
+    print(f"Running in {'testnet' if testnet else 'mainnet'} mode")
+    wallet_manager = WalletManager(api_key, api_secret, testnet)
+    triangle_executor = TriangleWalletExecutor(wallet_manager, trading_amount)
+    
+    # Define trading pairs
+    trading_pairs = ["ADAUSDT", "ADAUSDC", "USDCUSDT"]
+    
+    async def main():
+        try:
+            # Check initial balance
+            print("\nChecking initial balance...")
+            initial_balance = wallet_manager.get_wallet_balance()
+            
+            # Execute triangle trade
+            print("\nExecuting triangle trade...")
+            result = await triangle_executor.execute_triangle_trade(trading_pairs)
+            print("\nTrade Result:")
+            print(json.dumps(result, indent=2))
+            
+            # Check final balance
+            print("\nChecking final balance...")
+            final_balance = wallet_manager.get_wallet_balance()
+            
+        except Exception as e:
+            print(f"\nError in main execution: {e}")
+        finally:
+            print("\nClosing connections...")
+            wallet_manager.close()
+    
+    # Run the async main function
+    asyncio.run(main())
