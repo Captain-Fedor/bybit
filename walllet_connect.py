@@ -37,10 +37,34 @@ class BybitWalletManager:
     def get_wallet_balance(self) -> Dict[str, Any]:
         """Get wallet balance for the Unified Trading Account"""
         try:
+            # Get balance for all coins by not specifying the 'coin' parameter
             response = self.session.get_wallet_balance(
-                accountType="UNIFIED",
-                coin="USDT"
+                accountType="UNIFIED"
             )
+            
+            if response and 'result' in response:
+                # Extract the list of coins from the response
+                coins = response['result']['list'][0]['coin']
+                print("\nWallet Balances:")
+                print("-" * 50)
+                print(f"{'Currency':<10} {'Total':<15} {'Available':<15}")
+                print("-" * 50)
+                
+                for coin in coins:
+                    currency = coin['coin']
+                    # Handle empty string values
+                    total = float(coin['walletBalance']) if coin['walletBalance'] else 0.0
+                    available = float(coin['availableToWithdraw']) if coin['availableToWithdraw'] else 0.0
+                    
+                    # Only show coins with non-zero balance
+                    if total > 0:
+                        print(f"{currency:<10} {total:<15.8f} {available:<15.8f}")
+                
+                # If no non-zero balances were found
+                if not any(float(coin['walletBalance']) if coin['walletBalance'] else 0.0 > 0 for coin in coins):
+                    print("No non-zero balances found")
+                print("-" * 50)
+            
             return response
         except Exception as e:
             print(f"Error getting wallet balance: {e}")
@@ -163,9 +187,33 @@ async def main():
             print("Wallet manager stopped")
 
 if __name__ == "__main__":
+    # Trading parameters
+    trading_pair = "BTCUSDT"  # The trading pair you want to trade
+    side = "BUY"             # "BUY" or "SELL"
+    quantity = 20         # Amount of the base asset to trade
+    
+    # Initialize the wallet manager
+    wallet_manager = BybitWalletManager(testnet=True)
+    
     try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\nProgram terminated by user")
+        # Get current balance
+        wallet_manager.get_wallet_balance()
+        
+        # Execute the trade
+        print(f"\nExecuting {side} order for {quantity} {trading_pair}...")
+        order_response = wallet_manager.session.place_order(
+            category="spot",
+            symbol=trading_pair,
+            side=side,
+            orderType="MARKET",  # Using market order for immediate execution
+            qty=str(quantity)
+        )
+        
+        print("\nOrder Response:")
+        print(order_response)
+        
     except Exception as e:
-        print(f"Fatal error: {e}")
+        print(f"Error executing trade: {e}")
+    finally:
+        # Clean up
+        asyncio.run(wallet_manager.stop())
