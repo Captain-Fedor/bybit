@@ -13,14 +13,10 @@ load_dotenv()
 
 class WalletManager:
     def __init__(self, api_key: str, api_secret: str, testnet: bool = True):
-        """
-        Initialize WalletManager with API credentials for Unified Trading Account
-        """
         self.api_key = api_key
         self.api_secret = api_secret
         self.testnet = testnet
         
-        # Initialize HTTP session for unified trading
         self.session = HTTP(
             testnet=self.testnet,
             api_key=self.api_key,
@@ -28,18 +24,28 @@ class WalletManager:
         )
 
     def get_wallet_balance(self):
-        """Get current unified account wallet balance"""
+        """Get current unified account wallet balance in a simplified format"""
         try:
             balance = self.session.get_wallet_balance(accountType="UNIFIED")
-            print("\nWallet Balance:")
-            print(json.dumps(balance, indent=2))
-            return balance
+            
+            # Format the balance in a cleaner way
+            if balance['retCode'] == 0:
+                coins = balance['result']['list'][0]['coin']
+                print("\nWallet Balance:")
+                formatted_balance = {}
+                for coin in coins:
+                    if Decimal(str(coin['equity'])) > 0:  # Only show coins with balance
+                        formatted_balance[coin['coin']] = coin['equity']
+                        print(f"{coin['coin']}: {coin['equity']}")
+                return balance
+            else:
+                print(f"Error: {balance['retMsg']}")
+                return None
         except Exception as e:
             print(f"Error getting wallet balance: {e}")
             return None
 
     def close(self):
-        """Close all connections"""
         pass
 
 class TriangleWalletExecutor:
@@ -82,18 +88,30 @@ class TriangleWalletExecutor:
                 side=side,
                 orderType="MARKET",
                 qty=str(quantity),
-                accountType="UNIFIED"  # Specify unified account type
+                accountType="UNIFIED"
             )
             
-            self.current_orders[order_response['orderId']] = {
-                'symbol': symbol,
-                'status': 'PENDING'
-            }
+            print(f"Order response: {json.dumps(order_response, indent=2)}")  # Debug line
             
-            return order_response
+            if order_response['retCode'] == 0:  # Check if the order was successful
+                order_id = order_response['result']['orderId']
+                self.current_orders[order_id] = {
+                    'symbol': symbol,
+                    'status': 'PENDING'
+                }
+                return {
+                    'orderId': order_id,
+                    'symbol': symbol,
+                    'side': side,
+                    'quantity': quantity,
+                    'raw_response': order_response
+                }
+            else:
+                raise Exception(f"Order placement failed: {order_response['retMsg']}")
 
         except Exception as e:
             print(f"Error placing order for {symbol}: {e}")
+            print(f"Full error details: {str(e)}")  # Add more error details
             raise
 
     async def _wait_for_confirmation(self, order_id: str, timeout: int = 30) -> bool:
@@ -102,25 +120,45 @@ class TriangleWalletExecutor:
             try:
                 order_status = self.wallet_manager.session.get_order_history(
                     category="spot",
+                    symbol="ADAUSDT",  # Add symbol parameter
                     orderId=order_id,
-                    accountType="UNIFIED"  # Specify unified account type
+                    limit=1,
+                    accountType="UNIFIED"
                 )
                 
-                if order_status['result']['list'][0]['status'] == 'Filled':
-                    self.trade_confirmations[order_id] = order_status['result']['list'][0]
-                    print(f"Order {order_id} filled. Executed quantity: {order_status['result']['list'][0]['execQty']}")
-                    return True
+                print(f"Order status response: {json.dumps(order_status, indent=2)}")  # Debug line
                 
-                elif order_status['result']['list'][0]['status'] in ['Rejected', 'Cancelled']:
-                    print(f"Order {order_id} failed with status: {order_status['result']['list'][0]['status']}")
-                    return False
+                if order_status['retCode'] == 0:
+                    if not order_status['result']['list']:
+                        print(f"No order found for ID {order_id}, retrying...")
+                        await asyncio.sleep(1)
+                        continue
+                        
+                    status = order_status['result']['list'][0]['status']
+                    
+                    if status == 'FILLED':  # Changed from 'Filled' to 'FILLED'
+                        order_details = order_status['result']['list'][0]
+                        self.trade_confirmations[order_id] = order_details
+                        print(f"Order {order_id} filled.")
+                        print(f"Executed quantity: {order_details.get('execQty', 'N/A')}")
+                        print(f"Executed price: {order_details.get('avgPrice', 'N/A')}")
+                        return True
+                    
+                    elif status in ['REJECTED', 'CANCELLED']:  # Updated status values
+                        print(f"Order {order_id} failed with status: {status}")
+                        return False
+                    
+                    print(f"Current order status: {status}")
+                else:
+                    print(f"Error in order status response: {order_status['retMsg']}")
                 
                 await asyncio.sleep(1)
                 
             except Exception as e:
                 print(f"Error checking order status: {e}")
+                print(f"Full error details: {str(e)}")
                 return False
-                
+            
         print(f"Timeout waiting for order {order_id} confirmation")
         return False
 
