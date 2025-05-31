@@ -2,7 +2,7 @@ import json
 import time
 import asyncio
 from typing import List, Dict
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN
 from pybit.unified_trading import HTTP
 from pybit.unified_trading import WebSocket
 from dotenv import load_dotenv
@@ -83,19 +83,22 @@ class TriangleWalletExecutor:
 
     async def _execute_trade(self, symbol: str, side: str, quantity: str) -> Dict:
         try:
-            print(f"Placing {side} order for {symbol}, quantity: {quantity}")
+            # Round quantity based on symbol
+            rounded_quantity = self._round_quantity(symbol, quantity)
+            print(f"Placing {side} order for {symbol}, quantity: {rounded_quantity}")
+            
             order_response = self.wallet_manager.session.place_order(
                 category="spot",
                 symbol=symbol,
                 side=side,
                 orderType="MARKET",
-                qty=str(quantity),
+                qty=str(rounded_quantity),
                 accountType="UNIFIED"
             )
 
-            print(f"Order response: {json.dumps(order_response, indent=2)}")  # Debug line
+            print(f"Order response: {json.dumps(order_response, indent=2)}")
 
-            if order_response['retCode'] == 0:  # Check if the order was successful
+            if order_response['retCode'] == 0:
                 order_id = order_response['result']['orderId']
                 self.current_orders[order_id] = {
                     'symbol': symbol,
@@ -105,16 +108,36 @@ class TriangleWalletExecutor:
                     'orderId': order_id,
                     'symbol': symbol,
                     'side': side,
-                    'quantity': quantity,
+                    'quantity': rounded_quantity,
                     'raw_response': order_response
                 }
             else:
-                raise Exception(f"Order placement failed: {order_response['retMsg']}")
+                raise Exception(f"{order_response['retMsg']} (ErrCode: {order_response['retCode']})")
 
         except Exception as e:
             print(f"Error placing order for {symbol}: {e}")
-            print(f"Full error details: {str(e)}")  # Add more error details
+            print(f"Full error details: {str(e)}")
             raise
+
+    def _round_quantity(self, symbol: str, quantity: str) -> str:
+        """
+        Round quantity based on symbol requirements
+        """
+        # Common decimal places for different symbols
+        decimals = {
+            'ADABTC': 1,    # Example: 1 decimal place for ADABTC
+            'ADAUSDC': 1,   # Example: 1 decimal place for ADAUSDC
+            'BTCUSDC': 5,   # Example: 5 decimal places for BTCUSDC
+        }
+        
+        # Default to 1 decimal if symbol not found
+        decimal_places = decimals.get(symbol, 1)
+        
+        # Convert to Decimal for precise rounding
+        qty = Decimal(str(quantity))
+        rounded = qty.quantize(Decimal('0.1') ** decimal_places, rounding=ROUND_DOWN)
+        
+        return str(rounded)
 
     async def _wait_for_confirmation(self, order_id: str, timeout: int = 30) -> bool:
         start_time = time.time()
