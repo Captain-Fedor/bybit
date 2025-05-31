@@ -14,8 +14,64 @@ from pybit.unified_trading import HTTP
 
 from triangle_no_pandas import BybitTradingPairList, BybitTriangleCalculation
 from test_triple_socket import SymbolWebSocket, MultiSocketClient
+from walllet_connect import WalletManager, TriangleWalletExecutor
+
+def calculate_profit_percentage(entry_price: float, current_price: float) -> float:
+    """
+    Calculate profit percentage based on entry and current price
+    """
+    return ((current_price - entry_price) / entry_price) * 100
+
+class ProfitManager:
+    def __init__(self):
+        # More realistic profit targets
+        self.take_profit_percent = 0.5  # 0.5% profit target
+        self.stop_loss_percent = -0.3   # 0.3% loss limit
+        self.trailing_stop_percent = 0.2 # 0.2% trailing stop
+        
+        self.entry_price = None
+        self.highest_price = None
+        self.trailing_stop_price = None
+
+    def set_entry(self, price: float):
+        self.entry_price = price
+        self.highest_price = price
+        self.trailing_stop_price = price * (1 - self.trailing_stop_percent/100)
+
+    def should_take_profit(self, current_price: float) -> bool:
+        if not self.entry_price:
+            return False
+            
+        profit_percent = calculate_profit_percentage(self.entry_price, current_price)
+        return profit_percent >= self.take_profit_percent
+
+    def should_stop_loss(self, current_price: float) -> bool:
+        if not self.entry_price:
+            return False
+            
+        profit_percent = calculate_profit_percentage(self.entry_price, current_price)
+        return profit_percent <= self.stop_loss_percent
+
+    def update_trailing_stop(self, current_price: float):
+        if current_price > self.highest_price:
+            self.highest_price = current_price
+            self.trailing_stop_price = current_price * (1 - self.trailing_stop_percent/100)
+
+    def hit_trailing_stop(self, current_price: float) -> bool:
+        return current_price <= self.trailing_stop_price
 
 if __name__ == "__main__":
+    from dotenv import load_dotenv
+    import os
+
+    # Load environment variables from .env file
+    load_dotenv()
+
+    # Get configuration from environment variables with type conversion and defaults
+    SLEEP_TIME = float(os.getenv('SLEEP_TIME', 1))  # seconds between orderbook updates
+    TRADING_AMOUNT_USDT = float(os.getenv('TRADING_AMOUNT_USDT', 1000))
+    MIN_PROFIT = float(os.getenv('MIN_PROFIT', 0.5))  # in percents
+    MAX_PROFIT = float(os.getenv('MAX_PROFIT', 1000))  # in percents
 
     """get all posssible pairs from Bybit
         form all possible triangles
@@ -45,13 +101,6 @@ if __name__ == "__main__":
     """
 
     websocket.enableTrace(False)
-
-    # WebSocket parameters
-    SLEEP_TIME = 1  # seconds between orderbook updates
-    TRADING_AMOUNT_USDT = 1000
-    MIN_PROFIT = 1 # in precents
-    MAX_PROFIT = 50 # in precents
-
 
     trading_pairs = unique_triangle_pairs
     client = MultiSocketClient(
