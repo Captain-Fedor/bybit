@@ -11,12 +11,13 @@ import os
 # Load environment variables from .env file
 load_dotenv()
 
+
 class WalletManager:
     def __init__(self, api_key: str, api_secret: str, testnet: bool = True):
         self.api_key = api_key
         self.api_secret = api_secret
         self.testnet = testnet
-        
+
         self.session = HTTP(
             testnet=self.testnet,
             api_key=self.api_key,
@@ -27,7 +28,7 @@ class WalletManager:
         """Get current unified account wallet balance in a simplified format"""
         try:
             balance = self.session.get_wallet_balance(accountType="UNIFIED")
-            
+
             # Format the balance in a cleaner way
             if balance['retCode'] == 0:
                 coins = balance['result']['list'][0]['coin']
@@ -48,6 +49,7 @@ class WalletManager:
     def close(self):
         pass
 
+
 class TriangleWalletExecutor:
     def __init__(self, wallet_manager: WalletManager, initial_trading_amount: str):
         self.wallet_manager = wallet_manager
@@ -61,17 +63,17 @@ class TriangleWalletExecutor:
         try:
             quote_currency = first_pair[3:]  # Extract the quote currency (e.g., USDT from ADAUSDT)
             required_amount = Decimal(self.initial_amount)
-            
+
             # Get the coin list from the unified account response
             coin_list = balance['result']['list'][0]['coin']
-            
+
             for coin in coin_list:
                 if coin['coin'] == quote_currency:
                     available = Decimal(str(coin['equity']))  # Use 'equity' instead of 'availableToWithdraw'
                     print(f"Available {quote_currency} balance: {available}")
                     print(f"Required amount: {required_amount}")
                     return available >= required_amount
-            
+
             print(f"Could not find {quote_currency} in wallet")
             return False
         except Exception as e:
@@ -90,9 +92,9 @@ class TriangleWalletExecutor:
                 qty=str(quantity),
                 accountType="UNIFIED"
             )
-            
+
             print(f"Order response: {json.dumps(order_response, indent=2)}")  # Debug line
-            
+
             if order_response['retCode'] == 0:  # Check if the order was successful
                 order_id = order_response['result']['orderId']
                 self.current_orders[order_id] = {
@@ -120,45 +122,45 @@ class TriangleWalletExecutor:
             try:
                 order_status = self.wallet_manager.session.get_order_history(
                     category="spot",
-                    symbol="ADAUSDT",  # Add symbol parameter
+                    symbol=self.current_orders[order_id]['symbol'],
                     orderId=order_id,
                     limit=1,
                     accountType="UNIFIED"
                 )
-                
-                print(f"Order status response: {json.dumps(order_status, indent=2)}")  # Debug line
-                
+
+                print(f"Order status response: {json.dumps(order_status, indent=2)}")
+
                 if order_status['retCode'] == 0:
                     if not order_status['result']['list']:
                         print(f"No order found for ID {order_id}, retrying...")
                         await asyncio.sleep(1)
                         continue
-                        
-                    status = order_status['result']['list'][0]['status']
-                    
-                    if status == 'FILLED':  # Changed from 'Filled' to 'FILLED'
-                        order_details = order_status['result']['list'][0]
+
+                    order_details = order_status['result']['list'][0]
+                    status = order_details['orderStatus']
+
+                    if status == 'Filled':
                         self.trade_confirmations[order_id] = order_details
                         print(f"Order {order_id} filled.")
-                        print(f"Executed quantity: {order_details.get('execQty', 'N/A')}")
+                        print(f"Executed quantity: {order_details.get('cumExecQty', 'N/A')}")
                         print(f"Executed price: {order_details.get('avgPrice', 'N/A')}")
                         return True
-                    
-                    elif status in ['REJECTED', 'CANCELLED']:  # Updated status values
+
+                    elif status in ['Rejected', 'Cancelled']:
                         print(f"Order {order_id} failed with status: {status}")
                         return False
-                    
+
                     print(f"Current order status: {status}")
                 else:
                     print(f"Error in order status response: {order_status['retMsg']}")
-                
+
                 await asyncio.sleep(1)
-                
+
             except Exception as e:
                 print(f"Error checking order status: {e}")
                 print(f"Full error details: {str(e)}")
                 return False
-            
+
         print(f"Timeout waiting for order {order_id} confirmation")
         return False
 
@@ -183,10 +185,10 @@ class TriangleWalletExecutor:
                 side="BUY",
                 quantity=self.initial_amount
             )
-            
+
             if not await self._wait_for_confirmation(first_order['orderId']):
                 raise Exception(f"First trade {trading_pairs[0]} failed to confirm")
-            
+
             first_filled_qty = self.trade_confirmations[first_order['orderId']]['execQty']
             self.executed_amounts[trading_pairs[0]] = first_filled_qty
             print(f"First trade completed. Received: {first_filled_qty}")
@@ -198,10 +200,10 @@ class TriangleWalletExecutor:
                 side="SELL",
                 quantity=first_filled_qty
             )
-            
+
             if not await self._wait_for_confirmation(second_order['orderId']):
                 raise Exception(f"Second trade {trading_pairs[1]} failed to confirm")
-            
+
             second_filled_qty = self.trade_confirmations[second_order['orderId']]['execQty']
             self.executed_amounts[trading_pairs[1]] = second_filled_qty
             print(f"Second trade completed. Received: {second_filled_qty}")
@@ -213,10 +215,10 @@ class TriangleWalletExecutor:
                 side="BUY",
                 quantity=second_filled_qty
             )
-            
+
             if not await self._wait_for_confirmation(third_order['orderId']):
                 raise Exception(f"Third trade {trading_pairs[2]} failed to confirm")
-            
+
             third_filled_qty = self.trade_confirmations[third_order['orderId']]['execQty']
             self.executed_amounts[trading_pairs[2]] = third_filled_qty
             print(f"Third trade completed. Received: {third_filled_qty}")
@@ -235,6 +237,7 @@ class TriangleWalletExecutor:
                 "executed_amounts": self.executed_amounts
             }
 
+
 import json
 import time
 import asyncio
@@ -251,55 +254,58 @@ load_dotenv()
 if __name__ == "__main__":
     # Load environment variables
     load_dotenv()
-    
+
     # Get trading amount from environment variable with validation
     trading_amount = os.getenv('TRADING_AMOUNT_USDT')
     if not trading_amount:
         raise ValueError("TRADING_AMOUNT_USDT not found in .env file")
-    
+
     try:
         float(trading_amount)  # Validate that it's a valid number
     except ValueError:
         raise ValueError("TRADING_AMOUNT_USDT must be a valid number")
-    
+
     # Get testnet setting from environment variable
     testnet_value = os.getenv('TESTNET', 'true').lower()
     testnet = testnet_value in ('true', '1', 'yes')
-    
+
     api_key = os.getenv('BYBIT_API_KEY')
     api_secret = os.getenv('BYBIT_API_SECRET')
-    
+
     if not api_key or not api_secret:
         raise ValueError("API credentials not found in .env file")
-    
+
     print(f"Running in {'testnet' if testnet else 'mainnet'} mode")
     wallet_manager = WalletManager(api_key, api_secret, testnet)
     triangle_executor = TriangleWalletExecutor(wallet_manager, trading_amount)
-    
+
     # Define trading pairs
-    trading_pairs = ["ADAUSDT", "ADAUSDC", "USDCUSDT"]
-    
+    trading_pairs = ["ADAUSDC", "ADABTC", "BTCUSDC"]
+
+
+
     async def main():
         try:
             # Check initial balance
             print("\nChecking initial balance...")
             initial_balance = wallet_manager.get_wallet_balance()
-            
+
             # Execute triangle trade
             print("\nExecuting triangle trade...")
             result = await triangle_executor.execute_triangle_trade(trading_pairs)
             print("\nTrade Result:")
             print(json.dumps(result, indent=2))
-            
+
             # Check final balance
             print("\nChecking final balance...")
             final_balance = wallet_manager.get_wallet_balance()
-            
+
         except Exception as e:
             print(f"\nError in main execution: {e}")
         finally:
             print("\nClosing connections...")
             wallet_manager.close()
-    
+
+
     # Run the async main function
     asyncio.run(main())
