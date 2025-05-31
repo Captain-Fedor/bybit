@@ -177,7 +177,6 @@ class TriangleWalletExecutor:
             raise ValueError(f"Insufficient balance for initial trade of {self.initial_amount}")
 
         try:
-            # Execute trades as before...
             # First trade
             print(f"\nExecuting first trade for {trading_pairs[0]}")
             first_order = await self._execute_trade(
@@ -189,7 +188,8 @@ class TriangleWalletExecutor:
             if not await self._wait_for_confirmation(first_order['orderId']):
                 raise Exception(f"First trade {trading_pairs[0]} failed to confirm")
 
-            first_filled_qty = self.trade_confirmations[first_order['orderId']]['execQty']
+            # Changed from 'execQty' to 'cumExecQty'
+            first_filled_qty = self.trade_confirmations[first_order['orderId']]['cumExecQty']
             self.executed_amounts[trading_pairs[0]] = first_filled_qty
             print(f"First trade completed. Received: {first_filled_qty}")
 
@@ -204,7 +204,8 @@ class TriangleWalletExecutor:
             if not await self._wait_for_confirmation(second_order['orderId']):
                 raise Exception(f"Second trade {trading_pairs[1]} failed to confirm")
 
-            second_filled_qty = self.trade_confirmations[second_order['orderId']]['execQty']
+            # Changed from 'execQty' to 'cumExecQty'
+            second_filled_qty = self.trade_confirmations[second_order['orderId']]['cumExecQty']
             self.executed_amounts[trading_pairs[1]] = second_filled_qty
             print(f"Second trade completed. Received: {second_filled_qty}")
 
@@ -219,7 +220,8 @@ class TriangleWalletExecutor:
             if not await self._wait_for_confirmation(third_order['orderId']):
                 raise Exception(f"Third trade {trading_pairs[2]} failed to confirm")
 
-            third_filled_qty = self.trade_confirmations[third_order['orderId']]['execQty']
+            # Changed from 'execQty' to 'cumExecQty'
+            third_filled_qty = self.trade_confirmations[third_order['orderId']]['cumExecQty']
             self.executed_amounts[trading_pairs[2]] = third_filled_qty
             print(f"Third trade completed. Received: {third_filled_qty}")
 
